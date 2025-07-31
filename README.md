@@ -34,6 +34,16 @@ If you use this work or the associated data in your research, please cite our pa
 }
 ```
 
+Or the associated proceeding from ICRC 2025
+```yaml
+@article{Caccianiga_2024,
+    author        = {Galelli, Claudio and Caccianiga, Lorenzo and Apollonio, Lorenzo and Magnani, Paolo},
+    title         = {{Probing Ancient Cosmic Ray Flux with Paleo-Detectors and the Launch of the PRImuS Project}},
+    journal       = {Proceedings of the 39th International Cosmic Ray Conference, ICRC 2025},
+    year          = {2025},
+}
+```
+
 ## Contact
 
 For questions, please contact: Claudio Galelli – claudio.galelli@mi.infn.it
