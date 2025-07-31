@@ -22,7 +22,7 @@ cd PrimusCode
 
 If you use this work or the associated data in your research, please cite our paper:
 ```yaml
-@article{Caccianiga_2024,
+@article{Caccianiga:2024,
     author        = {Caccianiga, Lorenzo and Apollonio, Lorenzo and Mariani, Federico Maria and Magnani, Paolo and Galelli, Claudio and Veutro, Alessandro},
     title         = {{Sedimentary rocks from Mediterranean drought in the Messinian age as a probe of the past cosmic ray flux}},
     journal       = {Phys. Rev. D},
@@ -34,9 +34,9 @@ If you use this work or the associated data in your research, please cite our pa
 }
 ```
 
-Or the associated proceeding from ICRC 2025
+Or the associated proceedings from ICRC 2025
 ```yaml
-@article{Caccianiga_2024,
+@article{Galelli:2025,
     author        = {Galelli, Claudio and Caccianiga, Lorenzo and Apollonio, Lorenzo and Magnani, Paolo},
     title         = {{Probing Ancient Cosmic Ray Flux with Paleo-Detectors and the Launch of the PRImuS Project}},
     journal       = {Proceedings of the 39th International Cosmic Ray Conference, ICRC 2025},
