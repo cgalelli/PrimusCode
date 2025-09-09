@@ -234,7 +234,6 @@ class Paleodetector:
         e_kev, dee_dx, den_dx, length_um = (None, None, None, None)
 
         if os.path.exists(processed_srim_filepath):
-            print(f"Loading pre-processed SRIM data for {ion_symbol} (Z={ion_z}) from {processed_srim_filepath}")
             e_kev, dee_dx, den_dx, length_um = np.loadtxt(processed_srim_filepath, skiprows=1, unpack=True)
         else:
             print(f"Pre-processed SRIM data for {ion_symbol} (Z={ion_z}) not found. Processing raw file.")
@@ -276,7 +275,9 @@ class Paleodetector:
             return None, None, None, None
 
         def comma_to_dot(x):
-            return float(x.replace(b',', b'.'))
+            if isinstance(x, bytes):
+                x = x.decode()
+            return float(x.replace(',', '.'))
 
         data = np.genfromtxt(raw_srim_filepath, usecols=(0, 2, 3, 4, 6, 8), unpack=True, skip_header=26, skip_footer=13, converters={0: comma_to_dot, 2: comma_to_dot, 3: comma_to_dot, 4: comma_to_dot, 6: comma_to_dot, 8: comma_to_dot})
 
@@ -336,6 +337,9 @@ class Paleodetector:
             dRdx += self.config['stoich'][i] *dRdE_kev * np.abs(x_to_dedx_func(x_mid))
     
         return dRdx * self.config["uranium_concentration_g_g"] / 0.1e-9
+    
+    def integrate_neutron_spectrum(self, x_bins, age, sample_mass):
+        return self.calculate_neutron_spectrum(x_bins) * age * sample_mass * np.diff(x_bins)
 
     def calculate_nu_spectrum(self, x_bins, flux_name='all'):
         """
@@ -368,6 +372,9 @@ class Paleodetector:
                 dRdx += self.config['stoich'][i] * dRdE_kev * np.abs(x_to_dedx_func(x_mid))
         
         return dRdx * 365 * 1e6
+    
+    def integrate_nu_spectrum(self, x_bins, age, sample_mass, flux_name="all"):
+        return self.calculate_nu_spectrum(x_bins, flux_name) * age * sample_mass * np.diff(x_bins)
     
     def calculate_fission_spectrum(self, x_bins):
         """
@@ -424,6 +431,10 @@ class Paleodetector:
         dRdx = (counts / num_events) * fission_rate_factor / bin_widths
         
         return dRdx
+    
+    def integrate_fission_spectrum(self, x_bins, age, sample_mass):
+        return self.calculate_fission_spectrum(x_bins) * age * sample_mass * np.diff(x_bins)
+
     
     def _interpolate_flux_scenarios(self, scenario_config):
         """
@@ -498,17 +509,17 @@ class Paleodetector:
         Dynamically determines the list of all nuclear fragments from Geant4 output files.
 
         Args:
-            energy_names_gev (list): List of energy strings used in Geant4 filenames.
+            energy_names_gev (list): List of energies used in Geant4 filenames.
 
         Returns:
             list: A sorted list of unique fragment symbols.
         """
-        geant4_input_dir = os.path.join(self.data_path, "Geant4_data", f"{self.name}_QGSP")
+        geant4_input_dir = os.path.join(self.data_path, "Geant4_data", f"{self.name}")
         nuclei_dir = os.path.join(geant4_input_dir, "Nuclei")
         all_fragments = set()
         
         for energy_name in energy_names_gev:
-            filepath = os.path.join(nuclei_dir, f"outNuclei_{energy_name}.txt")
+            filepath = os.path.join(nuclei_dir, f"outNuclei_{energy_name:.6f}.txt")
             if os.path.exists(filepath):
                 names = np.loadtxt(filepath, usecols=0, dtype=str)
                 for name in names:
@@ -517,57 +528,44 @@ class Paleodetector:
                         all_fragments.add(clean_name)
         return sorted(list(all_fragments))
 
-    def _process_geant4_data(self, t_kyr, scenario_name, energy_names_gev, energy_bins_gev, target_thickness_cm, depth_mwe=0., total_simulated_muons=1e4):
+    def _process_geant4_data(self, t_kyr, scenario_name, energy_bins_gev, depth_mwe=0., total_simulated_muons=1e4, target_thickness_cm=1000):
         """
         Processes raw Geant4 data for a given scenario, creating a normalized recoil spectrum file.
 
         Args:
             t_kyr (float): The time in kiloyears for which to process the data.
             scenario_name (str): The name of the flux scenario to use.
-            energy_names_gev (list): List of energy strings for Geant4 filenames.
             energy_bins_gev (np.ndarray): The energy bin edges [GeV].
             target_thickness_cm (float): The thickness of the target in the Geant4 simulation [cm].
             depth_mwe (float, optional): Shielding depth [m.w.e.]. Defaults to 0.
             total_simulated_muons (float, optional): Number of muons per Geant4 run. Defaults to 1e4.
         """
-        print(f"Processing raw Geant4 data for scenario: {scenario_name} at time {t_kyr} kyr, depth {depth_mwe:.0f} m.w.e.")
         
         weights = self._calculate_flux_weights(t_kyr, scenario_name, energy_bins_gev, total_simulated_muons, depth_mwe)
-        all_fragments = self._get_all_fragments(energy_names_gev)
+        all_fragments = self._get_all_fragments(energy_bins_gev[:-1])
         
-        geant4_input_dir = os.path.join(self.data_path, "Geant4_data", f"{self.name}_QGSP")
+        geant4_input_dir = os.path.join(self.data_path, "Geant4_data", f"{self.name}")
                 
         all_recoil_spectra = {}
 
-        for nucleus_type in self.config["target_nuclei_geant4"]:
-            nucleus_dir = os.path.join(geant4_input_dir, nucleus_type)
+        nucleus_dir = os.path.join(geant4_input_dir, "Nuclei")
 
-            if nucleus_type == "Nuclei":
-                fragment_spectra = {frag: np.zeros(len(RECOIL_ENERGY_BINS_MEV) - 1) for frag in all_fragments}
-                for i, energy_name in enumerate(energy_names_gev):
-                    filepath = os.path.join(nucleus_dir, f"outNuclei_{energy_name}.txt")
-                    if not os.path.exists(filepath): continue
+        fragment_spectra = {frag: np.zeros(len(RECOIL_ENERGY_BINS_MEV) - 1) for frag in all_fragments}
+        for i, energy_name in enumerate(energy_bins_gev[:-1]):
+        
+            filepath = os.path.join(nucleus_dir, f"outNuclei_{energy_name:.6f}.txt")
+            if not os.path.exists(filepath): continue
 
-                    names, _, energies = np.loadtxt(filepath, usecols=(0, 1, 2), dtype=str, unpack=True)
-                    energies = energies.astype(float)
+            names, _, energies = np.loadtxt(filepath, usecols=(0, 1, 2), dtype=str, unpack=True)
+            energies = energies.astype(float)
 
-                    for name, energy in zip(names, energies):
-                        clean_name = ''.join([char for char in name if char.isalpha()])
-                        if clean_name in fragment_spectra:
-                            bin_index = np.digitize(energy, RECOIL_ENERGY_BINS_MEV) - 1
-                            if 0 <= bin_index < len(fragment_spectra[clean_name]):
-                                fragment_spectra[clean_name][bin_index] += weights[i]
-                all_recoil_spectra.update(fragment_spectra)
-            else:
-                total_spectrum = np.zeros(len(RECOIL_ENERGY_BINS_MEV) - 1)
-                for i, energy_name in enumerate(energy_names_gev):
-                    filepath = os.path.join(nucleus_dir, f"out{nucleus_type}_{energy_name}.txt")
-                    if not os.path.exists(filepath): continue
-
-                    recoil_energies_mev = np.loadtxt(filepath, usecols=2)
-                    counts, _ = np.histogram(recoil_energies_mev, bins=RECOIL_ENERGY_BINS_MEV)
-                    total_spectrum += counts * weights[i]
-                all_recoil_spectra[nucleus_type] = total_spectrum
+            for name, energy in zip(names, energies):
+                clean_name = ''.join([char for char in name if char.isalpha()])
+                if clean_name in fragment_spectra:
+                    bin_index = np.digitize(energy, RECOIL_ENERGY_BINS_MEV) - 1
+                    if 0 <= bin_index < len(fragment_spectra[clean_name]):
+                        fragment_spectra[clean_name][bin_index] += weights[i]
+        all_recoil_spectra.update(fragment_spectra)
 
         output_dir = os.path.join(self.data_path, "processed_recoils")
         os.makedirs(output_dir, exist_ok=True)
@@ -583,35 +581,37 @@ class Paleodetector:
         np.savez(output_filepath, Er_bins=RECOIL_ENERGY_BINS_MEV, **normalized_spectra)
         print(f"    - Saved processed data to {output_filepath}")
 
-    def _convert_recoil_to_track_spectrum(self, x_bins, recoil_data):
+    def _convert_recoil_to_track_spectrum(self, x_bins, recoil_data, energy_bins_gev):
         """
         Converts a full differential recoil energy spectrum (dR/dEr) to a track length spectrum (dR/dx).
 
         Args:
             x_bins (np.ndarray): The bin edges for the output track length spectrum [nm].
             recoil_data (np.lib.npyio.NpzFile): The loaded .npz file containing recoil energy spectra.
+            energy_bins_gev (np.ndarray): The energy bin edges [GeV].
 
+            
         Returns:
             dict: A dictionary of differential track rates (dR/dx) [events/kg/Myr/nm],
                   keyed by nucleus/fragment symbol, including a "total" key.
         """
         er_bins = recoil_data['Er_bins']
         er_mid_mev = er_bins[:-1] + np.diff(er_bins) / 2.0
-        
+        all_fragments = self._get_all_fragments(energy_bins_gev[:-1])
+
+
         dRdx_by_nucleus = {}
 
         dRdx_total = np.zeros(len(x_bins) - 1)
         x_mid_nm = x_bins[:-1] + np.diff(x_bins) / 2.0
         
-        for nucleus_name in self.config['fragments']+self.config['target_nuclei_geant4']:
+        for nucleus_name in all_fragments:
             if nucleus_name not in recoil_data: continue
             
             dRdEr_mev = recoil_data[nucleus_name]
             dRdEr_interp = interp1d(er_mid_mev, dRdEr_mev, bounds_error=False, fill_value=0.0)
 
-            clean_name = ''.join([char for char in nucleus_name if char.isalpha()])
-
-            ion_z = element(clean_name).atomic_number
+            ion_z = element(nucleus_name).atomic_number
             srim_func, e, dee_dx, den_dx, x = self._load_srim_data(ion_z)
             if not srim_func: continue
 
@@ -630,7 +630,7 @@ class Paleodetector:
         
         return dRdx_by_nucleus
 
-    def calculate_muon_signal_spectrum(self, x_bins, t_kyr, scenario_name, energy_names_gev, energy_bins_gev, target_thickness_cm, depth_mwe, total_simulated_muons=1e4, nucleus="total"):
+    def calculate_muon_signal_spectrum(self, x_bins, t_kyr, scenario_name, energy_bins_gev, depth_mwe, total_simulated_muons=1e4,  target_thickness_cm=1000, nucleus="total"):
         """
         Calculates the final muon-induced differential track length spectrum (dR/dx) for a given depth.
 
@@ -638,7 +638,6 @@ class Paleodetector:
             x_bins (np.ndarray): The bin edges for the output track length spectrum [nm].
             t_kyr (float): The time in kiloyears for which to calculate the spectrum.
             scenario_name (str): The name of the flux scenario to use.
-            energy_names_gev (list): List of energy strings for Geant4 filenames.
             energy_bins_gev (np.ndarray): The energy bin edges [GeV].
             target_thickness_cm (float): Target thickness in the Geant4 simulation [cm].
             depth_mwe (float): Shielding depth [m.w.e.].
@@ -650,12 +649,12 @@ class Paleodetector:
         """        
         filepath = os.path.join(self.data_path, "processed_recoils", f"{self.name}_muon_recoil_{scenario_name}_{t_kyr}kyr_{depth_mwe:.0f}mwe.npz")
         if not os.path.exists(filepath):
-            self._process_geant4_data(t_kyr, scenario_name, energy_names_gev, energy_bins_gev, target_thickness_cm, depth_mwe, total_simulated_muons)
+            self._process_geant4_data(t_kyr, scenario_name, energy_bins_gev, depth_mwe, total_simulated_muons, target_thickness_cm)
 
         recoil_data = np.load(filepath)
         self._recoil_cache[scenario_name] = recoil_data
 
-        dRdx_at_depth = self._convert_recoil_to_track_spectrum(x_bins, recoil_data)
+        dRdx_at_depth = self._convert_recoil_to_track_spectrum(x_bins, recoil_data, energy_bins_gev)
         
         if nucleus=="total":
             return dRdx_at_depth["total"]
@@ -674,30 +673,29 @@ class Paleodetector:
         Returns:
             np.ndarray: The number of tracks produced in each bin for this timestep.
         """
-        x_bins, t_kyr, scenario_name, energy_names_gev, energy_bins_gev, \
-        target_thickness_cm, initial_depth, deposition_rate_m_kyr, \
-        overburden_density_g_cm3, sample_mass_kg, total_simulated_muons = args
+        x_bins, t_kyr, scenario_name, energy_bins_gev, \
+        initial_depth, deposition_rate_m_kyr, \
+        overburden_density_g_cm3, sample_mass_kg, total_simulated_muons, target_thickness_cm = args
 
 
         depth_mwe = initial_depth + deposition_rate_m_kyr * t_kyr * overburden_density_g_cm3
 
         dRdx_at_depth = self.calculate_muon_signal_spectrum(
-            x_bins, t_kyr, scenario_name, energy_names_gev, energy_bins_gev, 
-            target_thickness_cm, depth_mwe, total_simulated_muons
+            x_bins, t_kyr, scenario_name, energy_bins_gev,
+            depth_mwe, total_simulated_muons, target_thickness_cm
         )
         
         tracks_in_step = dRdx_at_depth * sample_mass_kg * 1e-3 * np.diff(x_bins) * 4 * np.pi
         
         return tracks_in_step, t_kyr
 
-    def integrate_muon_signal_spectrum_parallel(self, x_bins, scenario_config, energy_names_gev, energy_bins_gev, exposure_window_kyr, sample_mass_kg, target_thickness_cm, initial_depth=0, deposition_rate_m_kyr=0, overburden_density_g_cm3=1., nsteps=None, total_simulated_muons=1e4):
+    def integrate_muon_signal_spectrum_parallel(self, x_bins, scenario_config, energy_bins_gev, exposure_window_kyr, sample_mass_kg, initial_depth=0, deposition_rate_m_kyr=0, overburden_density_g_cm3=1., nsteps=None, total_simulated_muons=1e4, target_thickness_cm=1000):
         """
         Calculates the final muon-induced track length spectrum by parallelizing the time integration.
 
         Args:
             x_bins (np.ndarray): The bin edges for the output track length spectrum [nm].
             scenario_config (dict): Configuration dictionary for the flux scenario.
-            energy_names_gev (list): List of energy strings for Geant4 filenames.
             energy_bins_gev (np.ndarray): The energy bin edges [GeV].
             exposure_window_kyr (float): The total exposure time in kiloyears.
             sample_mass_kg (float): The mass of the sample in kilograms.
@@ -720,12 +718,11 @@ class Paleodetector:
         time_bins_kyr = np.linspace(0, exposure_window_kyr, nsteps + 1)
         time_mids_kyr = time_bins_kyr[:-1] + np.diff(time_bins_kyr) / 2.0
 
-        tasks = [(x_bins, t_kyr, scenario_config["name"], energy_names_gev, energy_bins_gev, 
-                  target_thickness_cm, initial_depth, deposition_rate_m_kyr, 
-                  overburden_density_g_cm3, sample_mass_kg, total_simulated_muons)
+        tasks = [(x_bins, t_kyr, scenario_config["name"], energy_bins_gev, 
+                   initial_depth, deposition_rate_m_kyr, 
+                  overburden_density_g_cm3, sample_mass_kg, total_simulated_muons, target_thickness_cm)
                  for t_kyr in time_mids_kyr]
 
-        print(f"Starting parallel integration with {cpu_count()} workers...")
         with Pool() as pool:
             results = list(tqdm(pool.imap(self._integration_worker, tasks), total=len(tasks)))
         
@@ -771,7 +768,7 @@ class Paleodetector:
 
 
         if background_mu_tracks is not None:
-            ax.plot(x_mids, background_mu_tracks, label=f"Background Muon {key} Tracks")
+            ax.plot(x_mids, background_mu_tracks, label=f"Background Muon Tracks")
 
         if fission_tracks is not None:
             ax.plot(x_mids, fission_tracks, color="darkgreen", linestyle="--", linewidth=2, label=r'$^{238}$U Spontaneous Fission')
