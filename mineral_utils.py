@@ -515,11 +515,10 @@ class Paleodetector:
             list: A sorted list of unique fragment symbols.
         """
         geant4_input_dir = os.path.join(self.data_path, "Geant4_data", f"{self.name}")
-        nuclei_dir = os.path.join(geant4_input_dir, "Nuclei")
         all_fragments = set()
         
         for energy_name in energy_names_gev:
-            filepath = os.path.join(nuclei_dir, f"outNuclei_{energy_name:.6f}.txt")
+            filepath = os.path.join(geant4_input_dir, f"outNuclei_{energy_name:.6f}.txt")
             if os.path.exists(filepath):
                 names = np.loadtxt(filepath, usecols=0, dtype=str)
                 for name in names:
@@ -528,7 +527,7 @@ class Paleodetector:
                         all_fragments.add(clean_name)
         return sorted(list(all_fragments))
 
-    def _process_geant4_data(self, t_kyr, scenario_name, energy_bins_gev, depth_mwe=0., total_simulated_muons=1e4, target_thickness_cm=1000):
+    def _process_geant4_data(self, t_kyr, scenario_name, energy_bins_gev, depth_mwe=0., total_simulated_muons=3e4, target_thickness_cm=1000):
         """
         Processes raw Geant4 data for a given scenario, creating a normalized recoil spectrum file.
 
@@ -548,12 +547,10 @@ class Paleodetector:
                 
         all_recoil_spectra = {}
 
-        nucleus_dir = os.path.join(geant4_input_dir, "Nuclei")
-
         fragment_spectra = {frag: np.zeros(len(RECOIL_ENERGY_BINS_MEV) - 1) for frag in all_fragments}
         for i, energy_name in enumerate(energy_bins_gev[:-1]):
         
-            filepath = os.path.join(nucleus_dir, f"outNuclei_{energy_name:.6f}.txt")
+            filepath = os.path.join(geant4_input_dir, f"outNuclei_{energy_name:.6f}.txt")
             if not os.path.exists(filepath): continue
 
             names, _, energies = np.loadtxt(filepath, usecols=(0, 1, 2), dtype=str, unpack=True)
@@ -630,7 +627,7 @@ class Paleodetector:
         
         return dRdx_by_nucleus
 
-    def calculate_muon_signal_spectrum(self, x_bins, t_kyr, scenario_name, energy_bins_gev, depth_mwe, total_simulated_muons=1e4,  target_thickness_cm=1000, nucleus="total"):
+    def calculate_muon_signal_spectrum(self, x_bins, t_kyr, scenario_name, energy_bins_gev, depth_mwe, total_simulated_muons=3e4,  target_thickness_cm=1000, nucleus="total"):
         """
         Calculates the final muon-induced differential track length spectrum (dR/dx) for a given depth.
 
@@ -689,7 +686,7 @@ class Paleodetector:
         
         return tracks_in_step, t_kyr
 
-    def integrate_muon_signal_spectrum_parallel(self, x_bins, scenario_config, energy_bins_gev, exposure_window_kyr, sample_mass_kg, initial_depth=0, deposition_rate_m_kyr=0, overburden_density_g_cm3=1., nsteps=None, total_simulated_muons=1e4, target_thickness_cm=1000):
+    def integrate_muon_signal_spectrum_parallel(self, x_bins, scenario_config, energy_bins_gev, exposure_window_kyr, sample_mass_kg, initial_depth=0, deposition_rate_m_kyr=0, overburden_density_g_cm3=1., nsteps=None, total_simulated_muons=3e4, target_thickness_cm=1000):
         """
         Calculates the final muon-induced track length spectrum by parallelizing the time integration.
 
