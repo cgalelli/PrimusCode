@@ -738,7 +738,7 @@ class Paleodetector:
         return total_tracks
     
 
-    def plot_tracks(self, x_bins, muon_tracks=None, background_mu_tracks=None, fission_tracks=None, neutron_tracks=None, nu_tracks=None, atmo_nu_tracks=None, other_tracks=None, ax=None):
+    def plot_tracks(self, x_bins, muon_tracks=None, background_mu_tracks=None, fission_tracks=None, neutron_tracks=None, nu_tracks=None, atmo_nu_tracks=None, other_tracks=None, ax=None, upper_ylim=1e5):
         """
         Plots the track length spectrum.
 
@@ -790,7 +790,7 @@ class Paleodetector:
         ax.set_xscale('log')
         ax.set_yscale('log')
         ax.set_xlim(x_bins[0], x_bins[-1])
-        ax.set_ylim(1e-2, 1e10)
+        ax.set_ylim(1e-2, upper_ylim)
         ax.legend(loc='upper right', fontsize=12)
 
         return ax
