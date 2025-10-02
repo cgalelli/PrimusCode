@@ -527,7 +527,7 @@ class Paleodetector:
                         all_fragments.add(clean_name)
         return sorted(list(all_fragments))
 
-    def _process_geant4_data(self, t_kyr, scenario_name, energy_bins_gev, depth_mwe=0., total_simulated_muons=3e4, target_thickness_cm=1000):
+    def _process_geant4_data(self, t_kyr, scenario_name, energy_bins_gev, depth_mwe=0., total_simulated_muons=1e5, target_thickness_cm=1000):
         """
         Processes raw Geant4 data for a given scenario, creating a normalized recoil spectrum file.
 
@@ -627,7 +627,7 @@ class Paleodetector:
         
         return dRdx_by_nucleus
 
-    def calculate_muon_signal_spectrum(self, x_bins, t_kyr, scenario_name, energy_bins_gev, depth_mwe, total_simulated_muons=3e4,  target_thickness_cm=1000, nucleus="total"):
+    def calculate_muon_signal_spectrum(self, x_bins, t_kyr, scenario_name, energy_bins_gev, depth_mwe, total_simulated_muons=1e5,  target_thickness_cm=1000, nucleus="total"):
         """
         Calculates the final muon-induced differential track length spectrum (dR/dx) for a given depth.
 
@@ -686,7 +686,7 @@ class Paleodetector:
         
         return tracks_in_step, t_kyr
 
-    def integrate_muon_signal_spectrum_parallel(self, x_bins, scenario_config, energy_bins_gev, exposure_window_kyr, sample_mass_kg, initial_depth=0, deposition_rate_m_kyr=0, overburden_density_g_cm3=1., nsteps=None, total_simulated_muons=3e4, target_thickness_cm=1000):
+    def integrate_muon_signal_spectrum_parallel(self, x_bins, scenario_config, energy_bins_gev, exposure_window_kyr, sample_mass_kg, initial_depth=0, deposition_rate_m_kyr=0, overburden_density_g_cm3=1., nsteps=None, total_simulated_muons=1e5, target_thickness_cm=1000):
         """
         Calculates the final muon-induced track length spectrum by parallelizing the time integration.
 
@@ -738,7 +738,7 @@ class Paleodetector:
         return total_tracks
     
 
-    def plot_tracks(self, x_bins, muon_tracks=None, background_mu_tracks=None, fission_tracks=None, neutron_tracks=None, nu_tracks=None, atmo_nu_tracks=None, other_tracks=None, ax=None, upper_ylim=1e5):
+    def plot_tracks(self, x_bins, muon_tracks=None, background_mu_tracks=None, fission_tracks=None, neutron_tracks=None, nu_tracks=None, atmo_nu_tracks=None, other_tracks=None, ax=None, upper_ylim=1e8, plot_sum=True):
         """
         Plots the track length spectrum.
 
@@ -783,6 +783,26 @@ class Paleodetector:
             for key, value in other_tracks.items():
                 ax.plot(x_mids, value, label=f"{key} Tracks")
 
+        if plot_sum:
+            total_tracks = np.zeros_like(x_mids)
+            if muon_tracks is not None:
+                for value in muon_tracks.values():
+                    total_tracks += value
+            if background_mu_tracks is not None:
+                total_tracks += background_mu_tracks
+            if fission_tracks is not None:
+                total_tracks += fission_tracks
+            if neutron_tracks is not None:
+                total_tracks += neutron_tracks
+            if nu_tracks is not None:
+                total_tracks += nu_tracks
+            if atmo_nu_tracks is not None:
+                total_tracks += atmo_nu_tracks
+            if other_tracks is not None:
+                for value in other_tracks.values():
+                    total_tracks += value
+
+            ax.plot(x_mids, total_tracks, color="black", linestyle="-", linewidth=1, label="Total Tracks")
 
         ax.set_title(f"Expected Track Number in a {self.name} Sample", fontsize=20)
         ax.set_xlabel("Track Length [nm]", fontsize=18)
