@@ -1,3 +1,5 @@
 Data/processed_recoils/*
 *.png
 *.jpg
+Data/images/*
+Data/inference_results/*.csv
