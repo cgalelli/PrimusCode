@@ -3,3 +3,4 @@ Data/processed_recoils/*
 *.jpg
 Data/images/*
 Data/inference_results/*.csv
+Fluxmod.ipynb
