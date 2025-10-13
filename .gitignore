@@ -1,6 +1,4 @@
 Data/processed_recoils/*
-*.png
-*.jpg
+Plots/*
 Data/images/*
 Data/inference_results/*.csv
-Fluxmod.ipynb

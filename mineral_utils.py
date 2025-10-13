@@ -627,7 +627,7 @@ class Paleodetector:
         
         return dRdx_by_nucleus
 
-    def calculate_muon_signal_spectrum(self, x_bins, t_kyr, scenario_name, energy_bins_gev, depth_mwe, total_simulated_muons=1e5,  target_thickness_cm=1000, nucleus="total"):
+    def calculate_muon_signal_spectrum(self, x_bins, t_kyr, scenario_name, energy_bins_gev, depth_mwe, total_simulated_muons=1e5,  target_thickness_cm=1000, nucleus="total", time_precision=0):
         """
         Calculates the final muon-induced differential track length spectrum (dR/dx) for a given depth.
 
@@ -638,12 +638,14 @@ class Paleodetector:
             energy_bins_gev (np.ndarray): The energy bin edges [GeV].
             target_thickness_cm (float): Target thickness in the Geant4 simulation [cm].
             depth_mwe (float): Shielding depth [m.w.e.].
-            total_simulated_muons (float, optional): Number of muons per Geant4 run. Defaults to 1e4.
+            total_simulated_muons (float, optional): Number of muons per Geant4 run. Defaults to 1e5.
             nucleus (str, optional): Which nucleus/fragment spectrum to return ('total', 'all', or a specific symbol). Defaults to "total".
+            time_precision (int, optional): Decimal precision for time-based filenames. Defaults to 0 (O(kyr)).
 
         Returns:
             np.ndarray or dict: The differential track rate(s) (dR/dx) [events/kg/Myr/nm].
-        """        
+        """
+        t_kyr = round(t_kyr, time_precision)    
         filepath = os.path.join(self.data_path, "processed_recoils", f"{self.name}_muon_recoil_{scenario_name}_{t_kyr}kyr_{depth_mwe:.0f}mwe.npz")
         if not os.path.exists(filepath):
             self._process_geant4_data(t_kyr, scenario_name, energy_bins_gev, depth_mwe, total_simulated_muons, target_thickness_cm)
@@ -696,13 +698,13 @@ class Paleodetector:
             energy_bins_gev (np.ndarray): The energy bin edges [GeV].
             exposure_window_kyr (float): The total exposure time in kiloyears.
             sample_mass_kg (float): The mass of the sample in kilograms.
-            target_thickness_cm (float): Target thickness in the Geant4 simulation [cm].
             initial_depth (float, optional): Initial depth in meters water equivalent [m.w.e.]. Defaults to 0.
             deposition_rate_m_kyr (float, optional): Deposition rate in meters per kiloyear. Defaults to 0.
             overburden_density_g_cm3 (float, optional): Overburden density in g/cm³. Defaults to 1.
             nsteps (int, optional): Number of time steps for integration. Defaults to 75*(number of flux changes in scenario_config).
             total_simulated_muons (float, optional): Number of muons per Geant4 run. Defaults to 1e4.        
-
+            target_thickness_cm (float, optional): Thickness of the target in the Geant4 simulation [cm]. Defaults to 1000.
+            
         Returns:
             np.ndarray: The total number of tracks expected in each track length bin.
         """
