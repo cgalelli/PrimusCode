@@ -493,7 +493,7 @@ class Paleodetector:
 
         flux_interpolator = log_interp1d(self._energy_GeV[scenario_name], flux_val)
         e_attenuated = np.exp(-depth_mwe / 2500.0)*(self._energy_GeV[scenario_name]+500)-500
-        flux_attenuated = log_interp1d(e_attenuated, flux_interpolator(self._energy_GeV[scenario_name])*np.exp(depth_mwe / 2500.0))
+        flux_attenuated = log_interp1d(e_attenuated[e_attenuated>0.], flux_interpolator(self._energy_GeV[scenario_name])[e_attenuated>0.] *np.exp(depth_mwe / 2500.0))
 
         weights = []
         for i in range(len(energy_bins_gev) - 1):
@@ -645,7 +645,8 @@ class Paleodetector:
         Returns:
             np.ndarray or dict: The differential track rate(s) (dR/dx) [events/kg/Myr/nm].
         """
-        t_kyr = round(t_kyr, time_precision)    
+        t_kyr = round(t_kyr, time_precision)
+
         filepath = os.path.join(self.data_path, "processed_recoils", f"{self.name}_muon_recoil_{scenario_name}_{t_kyr}kyr_{depth_mwe:.0f}mwe.npz")
         if not os.path.exists(filepath):
             self._process_geant4_data(t_kyr, scenario_name, energy_bins_gev, depth_mwe, total_simulated_muons, target_thickness_cm)
@@ -675,7 +676,6 @@ class Paleodetector:
         x_bins, t_kyr, scenario_name, energy_bins_gev, \
         initial_depth, deposition_rate_m_kyr, \
         overburden_density_g_cm3, sample_mass_kg, total_simulated_muons, target_thickness_cm = args
-
 
         depth_mwe = initial_depth + deposition_rate_m_kyr * t_kyr * overburden_density_g_cm3
 
@@ -714,13 +714,12 @@ class Paleodetector:
         if not nsteps:
             nsteps = 75 * len(scenario_config["event_fluxes"])
 
-        time_bins_kyr = np.linspace(0, exposure_window_kyr, nsteps + 1)
-        time_mids_kyr = time_bins_kyr[:-1] + np.diff(time_bins_kyr) / 2.0
+        time_bins_kyr = np.linspace(0., exposure_window_kyr, nsteps + 1)
 
         tasks = [(x_bins, t_kyr, scenario_config["name"], energy_bins_gev, 
                    initial_depth, deposition_rate_m_kyr, 
                   overburden_density_g_cm3, sample_mass_kg, total_simulated_muons, target_thickness_cm)
-                 for t_kyr in time_mids_kyr]
+                 for t_kyr in time_bins_kyr]
 
         with Pool() as pool:
             results = list(tqdm(pool.imap(self._integration_worker, tasks), total=len(tasks)))
