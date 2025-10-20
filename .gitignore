@@ -5,4 +5,3 @@ Data/inference_results/*.csv
 .ipynb_checkpoints
 _pycache_/
 *.pyc
-__pycache__/mineral_utils.cpython-312.pyc
