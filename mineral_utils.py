@@ -683,10 +683,9 @@ class Paleodetector:
             x_bins, t_kyr, scenario_name, energy_bins_gev,
             depth_mwe, total_simulated_muons, target_thickness_cm
         )
+
         
-        tracks_in_step = dRdx_at_depth * sample_mass_kg * 1e-3 * np.diff(x_bins) * 4 * np.pi
-        
-        return tracks_in_step, t_kyr
+        return dRdx_at_depth, t_kyr
 
     def integrate_muon_signal_spectrum_parallel(self, x_bins, scenario_config, energy_bins_gev, exposure_window_kyr, sample_mass_kg, initial_depth=0, deposition_rate_m_kyr=0, overburden_density_g_cm3=1., nsteps=None, total_simulated_muons=1e5, target_thickness_cm=1000):
         """
@@ -724,17 +723,19 @@ class Paleodetector:
         with Pool() as pool:
             results = list(tqdm(pool.imap(self._integration_worker, tasks), total=len(tasks)))
         
-        tracks_array, t_kyr = zip(*results)
+        drdx_array, t_kyr = zip(*results)
 
-        tracks_array = np.array(tracks_array)
+        drdx_array = np.array(drdx_array)
         if len(time_bins_kyr) == 1:
             kind = "nearest"
         else:
             kind = "linear"
 
-        track_interpolators = [interp1d(t_kyr, tracks, bounds_error=False, fill_value=0.0, kind=kind) for tracks in tracks_array.T]
+        drdx_interpolators = [interp1d(t_kyr, drdx, bounds_error=False, fill_value=0.0, kind=kind) for drdx in drdx_array.T]
 
-        total_tracks = [quad(track_interpolator, 0, exposure_window_kyr)[0] for track_interpolator in track_interpolators]
+        total_drdx = [quad(drdx_interpolator, 0, exposure_window_kyr)[0] for drdx_interpolator in drdx_interpolators]
+
+        total_tracks = np.array(total_drdx) * sample_mass_kg * 1e-3 * 4 * np.pi
 
         return total_tracks
     
