@@ -27,6 +27,10 @@ RECOIL_ER_MIN_LOG_MEV= -2
 RECOIL_ER_MAX_LOG_MEV= 3
 RECOIL_ENERGY_BINS_MEV = np.logspace(RECOIL_ER_MIN_LOG_MEV, RECOIL_ER_MAX_LOG_MEV, RECOIL_N_BINS)
 
+LENGTH_N_BINS = 1000
+LENGTH_MIN_LOG_NM = 1.5
+LENGTH_MAX_LOG_NM = 5.5
+TRACK_LENGTH_BINS_NM = np.logspace(LENGTH_MIN_LOG_NM, LENGTH_MAX_LOG_NM, LENGTH_N_BINS)
 
 # --- Utility Functions ---
 
@@ -301,7 +305,7 @@ class Paleodetector:
 
         return e_kev, dee_dx, den_dx, length_um
 
-    def calculate_neutron_spectrum(self, x_bins):
+    def calculate_neutron_spectrum(self, x_bins=TRACK_LENGTH_BINS_NM):
         """
         Calculates the differential track rate from radiogenic neutrons.
 
@@ -338,10 +342,20 @@ class Paleodetector:
     
         return dRdx * self.config["uranium_concentration_g_g"] / 0.1e-9
     
-    def integrate_neutron_spectrum(self, x_bins, age, sample_mass):
-        return self.calculate_neutron_spectrum(x_bins) * age * sample_mass * np.diff(x_bins)
+    def integrate_neutron_spectrum(self, x_bins, age, sample_mass, x_grid=TRACK_LENGTH_BINS_NM):
 
-    def calculate_nu_spectrum(self, x_bins, flux_name='all'):
+        x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
+        x_mids_grid = x_grid[:-1] + np.diff(x_grid) / 2.0
+
+        drdx = self.calculate_neutron_spectrum(x_grid) * age * sample_mass
+
+        total_tracks_interp  = interp1d(x_mids_grid, np.array(drdx),  bounds_error=False, fill_value='extrapolate')
+
+        total_tracks = [quad(total_tracks_interp, x_bins[i], x_bins[i+1])[0] for i in range(len(x_mids))]
+
+        return total_tracks
+
+    def calculate_nu_spectrum(self, x_bins=TRACK_LENGTH_BINS_NM, flux_name='all'):
         """
         Calculates the differential track rate from neutrino sources via CEvNS.
 
@@ -373,10 +387,20 @@ class Paleodetector:
         
         return dRdx * 365 * 1e6
     
-    def integrate_nu_spectrum(self, x_bins, age, sample_mass, flux_name="all"):
-        return self.calculate_nu_spectrum(x_bins, flux_name) * age * sample_mass * np.diff(x_bins)
+    def integrate_nu_spectrum(self, x_bins, age, sample_mass, flux_name="all", x_grid=TRACK_LENGTH_BINS_NM):
+
+        x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
+        x_mids_grid = x_grid[:-1] + np.diff(x_grid) / 2.0
+
+        drdx = self.calculate_nu_spectrum(x_grid, flux_name) * age * sample_mass
+
+        total_tracks_interp  = interp1d(x_mids_grid, np.array(drdx),  bounds_error=False, fill_value='extrapolate')
+
+        total_tracks = [quad(total_tracks_interp, x_bins[i], x_bins[i+1])[0] for i in range(len(x_mids))]
+
+        return total_tracks
     
-    def calculate_fission_spectrum(self, x_bins):
+    def calculate_fission_spectrum(self, x_bins=TRACK_LENGTH_BINS_NM):
         """
         Calculates the differential track rate from U-238 spontaneous fission.
 
@@ -432,8 +456,18 @@ class Paleodetector:
         
         return dRdx
     
-    def integrate_fission_spectrum(self, x_bins, age, sample_mass):
-        return self.calculate_fission_spectrum(x_bins) * age * sample_mass * np.diff(x_bins)
+    def integrate_fission_spectrum(self, x_bins, age, sample_mass, x_grid=TRACK_LENGTH_BINS_NM):
+
+        x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
+        x_mids_grid = x_grid[:-1] + np.diff(x_grid) / 2.0
+
+        drdx = self.calculate_fission_spectrum(x_grid) * age * sample_mass
+
+        total_tracks_interp  = interp1d(x_mids_grid, np.array(drdx),  bounds_error=False, fill_value='extrapolate')
+
+        total_tracks = [quad(total_tracks_interp, x_bins[i], x_bins[i+1])[0] for i in range(len(x_mids))]
+
+        return total_tracks
 
     
     def _interpolate_flux_scenarios(self, scenario_config):
@@ -687,7 +721,7 @@ class Paleodetector:
         
         return dRdx_at_depth, t_kyr
 
-    def integrate_muon_signal_spectrum_parallel(self, x_bins, scenario_config, energy_bins_gev, exposure_window_kyr, sample_mass_kg, initial_depth=0, deposition_rate_m_kyr=0, overburden_density_g_cm3=1., nsteps=None, total_simulated_muons=1e5, target_thickness_cm=1000):
+    def integrate_muon_signal_spectrum_parallel(self, x_bins, scenario_config, energy_bins_gev, exposure_window_kyr, sample_mass_kg, initial_depth=0, deposition_rate_m_kyr=0, overburden_density_g_cm3=1., nsteps=None, total_simulated_muons=1e5, target_thickness_cm=1000, x_grid=TRACK_LENGTH_BINS_NM):
         """
         Calculates the final muon-induced track length spectrum by parallelizing the time integration.
 
@@ -715,7 +749,10 @@ class Paleodetector:
 
         time_bins_kyr = np.linspace(0., exposure_window_kyr, nsteps + 1)
 
-        tasks = [(x_bins, t_kyr, scenario_config["name"], energy_bins_gev, 
+        x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
+        x_mids_grid = x_grid[:-1] + np.diff(x_grid) / 2.0
+
+        tasks = [(x_grid, t_kyr, scenario_config["name"], energy_bins_gev, 
                    initial_depth, deposition_rate_m_kyr, 
                   overburden_density_g_cm3, sample_mass_kg, total_simulated_muons, target_thickness_cm)
                  for t_kyr in time_bins_kyr]
@@ -735,183 +772,8 @@ class Paleodetector:
 
         total_drdx = [quad(drdx_interpolator, 0, exposure_window_kyr)[0] for drdx_interpolator in drdx_interpolators]
 
-        total_tracks = np.array(total_drdx) * sample_mass_kg * 1e-3 * 4 * np.pi
+        total_tracks_interp  = interp1d(x_mids_grid, np.array(total_drdx) * sample_mass_kg * 1e-3 * np.pi,  bounds_error=False, fill_value='extrapolate')
+
+        total_tracks = [quad(total_tracks_interp, x_bins[i], x_bins[i+1])[0] for i in range(len(x_mids))]
 
         return total_tracks
-    
-
-    def plot_tracks(self, x_bins, muon_tracks=None, background_mu_tracks=None, fission_tracks=None, neutron_tracks=None, nu_tracks=None, atmo_nu_tracks=None, other_tracks=None, ax=None, upper_ylim=1e8, plot_sum=True):
-        """
-        Plots the track length spectrum.
-
-        Args:
-            x_mids (np.ndarray): The midpoints of the track length bins [nm].
-            muon_tracks (np.ndarray, optional): Muon track counts. Defaults to None.
-            fission_tracks (np.ndarray, optional): The track counts from U-238 spontaneous fission. Defaults to None.
-            neutron_tracks (np.ndarray, optional): The track counts from radiogenic neutron background. Defaults to None.
-            nu_tracks (np.ndarray, optional): The track counts from neutrino background. Defaults to None.
-            other_tracks (dict, optional): A dictionary of other track counts keyed by scenario name. Defaults to None.
-            ax (matplotlib.axes.Axes, optional): The axes to plot on. Defaults to None.
-            plot_total (bool, optional): Whether to plot the total track counts. Defaults to True.
-
-        """
-        if ax is None:
-            import matplotlib.pyplot as plt
-            _, ax = plt.subplots()
-        
-        x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
-
-        if muon_tracks is not None:
-            for key, value in muon_tracks.items():
-                ax.plot(x_mids, value, label=f"Muon {key} Tracks")
-
-
-        if background_mu_tracks is not None:
-            ax.plot(x_mids, background_mu_tracks, label=f"Background Muon Tracks")
-
-        if fission_tracks is not None:
-            ax.plot(x_mids, fission_tracks, color="darkgreen", linestyle="--", linewidth=2, label=r'$^{238}$U Spontaneous Fission')
-
-        if neutron_tracks is not None:
-            ax.plot(x_mids, neutron_tracks, color="darkblue", linestyle="--", linewidth=2, label="Radiogenic Neutron Background")
-
-        if nu_tracks is not None:
-            ax.plot(x_mids, nu_tracks, color="darkorange", linestyle="--", linewidth=2, label="Neutrino Background")
-
-        if atmo_nu_tracks is not None:
-            ax.plot(x_mids, atmo_nu_tracks, color="purple", linestyle="--", linewidth=2, label="Atmospheric Neutrino Background")
-            
-        if other_tracks is not None:
-            for key, value in other_tracks.items():
-                ax.plot(x_mids, value, label=f"{key} Tracks")
-
-        if plot_sum:
-            total_tracks = np.zeros_like(x_mids)
-            if muon_tracks is not None:
-                for value in muon_tracks.values():
-                    total_tracks += value
-            if background_mu_tracks is not None:
-                total_tracks += background_mu_tracks
-            if fission_tracks is not None:
-                total_tracks += fission_tracks
-            if neutron_tracks is not None:
-                total_tracks += neutron_tracks
-            if nu_tracks is not None:
-                total_tracks += nu_tracks
-            if atmo_nu_tracks is not None:
-                total_tracks += atmo_nu_tracks
-            if other_tracks is not None:
-                for value in other_tracks.values():
-                    total_tracks += value
-
-            ax.plot(x_mids, total_tracks, color="black", linestyle="-", linewidth=1, label="Total Tracks")
-
-        ax.set_title(f"Expected Track Number in a {self.name} Sample", fontsize=20)
-        ax.set_xlabel("Track Length [nm]", fontsize=18)
-        ax.set_ylabel("Number of Tracks", fontsize=18)
-        ax.set_xscale('log')
-        ax.set_yscale('log')
-        ax.set_xlim(x_bins[0], x_bins[-1])
-        ax.set_ylim(1e-2, upper_ylim)
-        ax.legend(loc='upper right', fontsize=12)
-
-        return ax
-    
-    def calibrate_all_spectra(self, x_mids, x_scale_factor=1.0, y_scale_factor=1.0, muon_tracks=None, background_mu_tracks=None, fission_tracks=None, neutron_tracks=None, nu_tracks=None, atmo_nu_tracks=None, other_tracks=None):
-
-        """
-        Calibrates all track spectra by applying a scaling factor to both x and y axes.
-
-        Args:
-            x_mids (np.ndarray): The midpoints of the track length bins [nm].
-            x_scale_factor (float, optional): Scaling factor for the x-axis. Defaults to 1.0.
-            y_scale_factor (float, optional): Scaling factor for the y-axis. Defaults to 1.0.
-            muon_tracks (dict, optional): A dictionary of muon track counts keyed by scenario name. Defaults to None.
-            background_mu_tracks (dict, optional): A dictionary of background muon track counts keyed by scenario name. Defaults to None.
-            fission_tracks (np.ndarray, optional): The track counts from U-238 spontaneous fission. Defaults to None.
-            neutron_tracks (np.ndarray, optional): The track counts from radiogenic neutron background. Defaults to None.
-            nu_tracks (np.ndarray, optional): The track counts from neutrino background. Defaults to None.
-            atmo_nu_tracks (np.ndarray, optional): The track counts from atmospheric neutrino background. Defaults to None.
-            other_tracks (dict, optional): A dictionary of other track counts keyed by scenario name. Defaults to None.
-
-        Returns:
-            dict: A dictionary containing the calibrated spectra.
-        """
-        calibrated_muon_spectrum = {}
-        calibrated_backgroundmuon_spectrum = {}
-        calibrated_background_spectrum = {}
-
-        if muon_tracks is not None:
-            for key, value in muon_tracks.items():
-                calibrated_muon_spectrum[key] = calibrate_spectrum(x_mids, value, x_scale_factor, y_scale_factor)
-        
-        if background_mu_tracks is not None:
-            for key, value in background_mu_tracks.items():
-                calibrated_backgroundmuon_spectrum[key] = calibrate_spectrum(x_mids, value, x_scale_factor, y_scale_factor)
-        
-        if fission_tracks is not None:
-            calibrated_background_spectrum['fission'] = calibrate_spectrum(x_mids, fission_tracks, x_scale_factor, y_scale_factor)
-        
-        if neutron_tracks is not None:
-            calibrated_background_spectrum['neutron'] = calibrate_spectrum(x_mids, neutron_tracks, x_scale_factor, y_scale_factor)
-        
-        if nu_tracks is not None:
-            calibrated_background_spectrum['nu'] = calibrate_spectrum(x_mids, nu_tracks, x_scale_factor, y_scale_factor)
-        
-        if atmo_nu_tracks is not None:
-            calibrated_background_spectrum['atmo_nu'] = calibrate_spectrum(x_mids, atmo_nu_tracks, x_scale_factor, y_scale_factor)
-        
-        if other_tracks is not None:
-            for key, value in other_tracks.items():
-                calibrated_background_spectrum[key] = calibrate_spectrum(x_mids, value, x_scale_factor, y_scale_factor)    
-        
-        return calibrated_muon_spectrum, calibrated_backgroundmuon_spectrum, calibrated_background_spectrum
-
-
-    def smear_all_spectra(self, size, sigma_left, sigma_right=None, muon_tracks=None, background_mu_tracks=None, fission_tracks=None, neutron_tracks=None, nu_tracks=None, atmo_nu_tracks=None, other_tracks=None):
-        """
-        Applies a Gaussian smearing to all track spectra.
-
-        Args:
-            x_mids (np.ndarray): The midpoints of the track length bins [nm].
-            muon_tracks (dict, optional): A dictionary of muon track counts keyed by scenario name. Defaults to None.
-            background_mu_tracks (dict, optional): A dictionary of background muon track counts keyed by scenario name. Defaults to None.
-            fission_tracks (np.ndarray, optional): The track counts from U-238 spontaneous fission. Defaults to None.
-            neutron_tracks (np.ndarray, optional): The track counts from radiogenic neutron background. Defaults to None.
-            nu_tracks (np.ndarray, optional): The track counts from neutrino background. Defaults to None.
-            atmo_nu_tracks (np.ndarray, optional): The track counts from atmospheric neutrino background. Defaults to None.
-            other_tracks (dict, optional): A dictionary of other track counts keyed by scenario name. Defaults to None.
-            smear_factor (float, optional): The standard deviation for the Gaussian smearing. Defaults to 0.1.
-
-        Returns:
-            dict: A dictionary containing the smeared spectra.
-        """
-        smeared_muon_spectrum = {}
-        smeared_backgroundmuon_spectrum = {}
-        smeared_background_spectrum = {}
-
-        if muon_tracks is not None:
-            for key, value in muon_tracks.items():
-                smeared_muon_spectrum[key] = np.convolve(value, _asymmetric_gaussian_kernel(size, sigma_left, sigma_right), mode='same')
-
-        if background_mu_tracks is not None:
-            for key, value in background_mu_tracks.items():
-                smeared_backgroundmuon_spectrum[key] = np.convolve(value, _asymmetric_gaussian_kernel(size, sigma_left, sigma_right), mode='same')
-        
-        if fission_tracks is not None:
-            smeared_background_spectrum['fission'] = np.convolve(fission_tracks, _asymmetric_gaussian_kernel(size, sigma_left, sigma_right), mode='same')
-        
-        if neutron_tracks is not None:
-            smeared_background_spectrum['neutron'] = np.convolve(neutron_tracks, _asymmetric_gaussian_kernel(size, sigma_left, sigma_right), mode='same')
-        
-        if nu_tracks is not None:
-            smeared_background_spectrum['nu'] = np.convolve(nu_tracks, _asymmetric_gaussian_kernel(size, sigma_left, sigma_right), mode='same')
-        
-        if atmo_nu_tracks is not None:
-            smeared_background_spectrum['atmo_nu'] = np.convolve(atmo_nu_tracks, _asymmetric_gaussian_kernel(size, sigma_left, sigma_right), mode='same')
-        
-        if other_tracks is not None:
-            for key, value in other_tracks.items():
-                smeared_background_spectrum[key] = np.convolve(value, _asymmetric_gaussian_kernel(size, sigma_left, sigma_right), mode='same')
-
-        return smeared_muon_spectrum, smeared_backgroundmuon_spectrum, smeared_background_spectrum
