@@ -519,7 +519,7 @@ class Paleodetector:
         Returns:
             list: A list of weights for each energy bin.
         """  
-
+        weights = []
         if not self._flux_interpolators[scenario_name]:
             raise ValueError(f"Flux interpolators not initialized for scenario {scenario_name}.")
 
@@ -527,16 +527,21 @@ class Paleodetector:
 
         flux_interpolator = log_interp1d(self._energy_GeV[scenario_name], flux_val)
         e_attenuated = np.exp(-depth_mwe / 2500.0)*(self._energy_GeV[scenario_name]+500)-500
-        flux_attenuated = log_interp1d(e_attenuated[e_attenuated>0.], flux_interpolator(self._energy_GeV[scenario_name])[e_attenuated>0.] *np.exp(depth_mwe / 2500.0))
+        
+        if e_attenuated[e_attenuated>0.].size == 0:
+            weights = [0.0 for _ in range(len(energy_bins_gev) - 1)]
+            return weights
+        
+        else:
+            flux_attenuated = log_interp1d(e_attenuated[e_attenuated>0.], flux_interpolator(self._energy_GeV[scenario_name])[e_attenuated>0.] *np.exp(depth_mwe / 2500.0))
 
-        weights = []
-        for i in range(len(energy_bins_gev) - 1):
-            integrated_flux, _ = quad(flux_attenuated, energy_bins_gev[i], energy_bins_gev[i+1])
-            if np.isnan(integrated_flux) or integrated_flux <= 0:
-                integrated_flux = 0.0
-            weight = (integrated_flux * SECONDS_PER_MYR * 1e-4) / total_simulated_muons
-            weights.append(weight)
-        return weights
+            for i in range(len(energy_bins_gev) - 1):
+                integrated_flux, _ = quad(flux_attenuated, energy_bins_gev[i], energy_bins_gev[i+1])
+                if np.isnan(integrated_flux) or integrated_flux <= 0:
+                    integrated_flux = 0.0
+                weight = (integrated_flux * SECONDS_PER_MYR * 1e-4) / total_simulated_muons
+                weights.append(weight)
+            return weights
 
     def _get_all_fragments(self, energy_names_gev):
         """
