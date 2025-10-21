@@ -1,0 +1,54 @@
+Halite:
+  name: Halite
+  shortname: Hal
+  composition: Na-Cl
+  nuclei:
+  - Na
+  - Cl
+  stoich:
+  - 1
+  - 1
+  uranium_concentration_g_g: 1.0e-09
+  density_g_cm3: 2.16
+Olivine:
+  name: Olivine
+  shortname: Oli
+  composition: Mg-Fe-Si- O
+  nuclei:
+  - Mg
+  - Fe
+  - Si
+  - O
+  stoich:
+  - 1.8
+  - 0.2
+  - 1
+  - 4
+  uranium_concentration_g_g: 1.0e-07
+  density_g_cm3: 3.8
+Quartz:
+  name: Quartz
+  shortname: Qz
+  composition: Si- O
+  nuclei:
+  - Si
+  - O
+  stoich:
+  - 1
+  - 2
+  uranium_concentration_g_g: 1.0e-05
+  density_g_cm3: 2.6
+Spinel:
+  name: Spinel
+  shortname: Spi
+  composition: Mg-Al- O
+  nuclei:
+  - Mg
+  - Al
+  - O
+  stoich:
+  - 1
+  - 2
+  - 4
+  uranium_concentration_g_g: 1.0e-07
+  density_g_cm3: 3.7
