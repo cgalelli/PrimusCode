@@ -5,3 +5,4 @@ Data/inference_results/*.csv
 .ipynb_checkpoints
 _pycache_/
 *.pyc
+Primus_analysis.ipynb
