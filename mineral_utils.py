@@ -798,7 +798,7 @@ class Paleodetector:
 
         return calibrated_y*y_scale_factor
     
-    def slice_spectrum(self, x_bins, counts, angular_pdf=None, phi_cut_deg=0., l_min_measurable=1000, l_max_measurable=50000, f_phi= lambda phi: 1., n_samples=1e6):
+    def slice_spectrum(self, x_bins, counts, angular_pdf=None, phi_cut_deg=0., l_min_measurable=300., l_max_measurable=50000., pit_width=500., bulk_etching_depth=100., f_phi= lambda phi: 1., n_samples=1e6, correction=True):
         """
         Applies Monte Carlo simulation of track slicing, accounting for geometrical, angular, 
         and experimental filtering effects (min/max measurable length).
@@ -811,12 +811,17 @@ class Paleodetector:
             phi_cut_deg (float): Angular filter threshold (tracks with phi < phi_cut are rejected). 
                                  Set to 0.0 for highly-faithful plasma etching.
             l_min_measurable (float): Minimum measurable segment length, L_min [nm]. Tracks shorter than 
-                                      this are lost due to etching away or resolution limits.
+                                      this are lost due resolution limits.
             l_max_measurable (float): Maximum measurable segment length, L_max [nm]. This caps 
                                       the pit size due to saturation effects in the etching process.
+            pit_width (float): Typical width of the etched pit [nm]. 
+                               Tracks with parallel footprint smaller than this threshold will be measured by this.
+            bulk_etching_depth (float): Minimum vertical development of the track [nm]. 
+                                        Tracks shallower than this are lost due to etching away.
             f_phi (callable): Function applied to the segment length L_seg * f_phi(phi). Corrects 
                               for anisotropic enlargement (e.g., set to lambda phi: 1.0 for plasma etching).
             n_samples (int): Number of Monte Carlo tracks to simulate for accurate statistics.
+            correction (bool): If True, applies pit_width correction. If not, the pit_width correction is ignored.
 
         Returns:
             np.ndarray: The resulting measured track count histogram N(L_meas), normalized to 
@@ -844,7 +849,18 @@ class Paleodetector:
         measured_samples = seg_samples * f_phi(phi_retained)
 
         is_retained_length = measured_samples >= l_min_measurable
-        final_measured_samples = np.minimum(measured_samples[is_retained_length], l_max_measurable)
+
+        measurable_samples = measured_samples[is_retained_length]
+        measurable_angles = phi_retained[is_retained_length]
+
+        is_retained_depth = measurable_samples * np.sin(measurable_angles) >= bulk_etching_depth
+
+        if correction:
+            corrected_measurable_samples = np.where(measurable_samples[is_retained_depth] * np.cos(measurable_angles[is_retained_depth]) >= pit_width/2., (pit_width/2.)+measurable_samples[is_retained_depth] * np.cos(measurable_angles[is_retained_depth]), pit_width)
+        else:
+            corrected_measurable_samples = measurable_samples[is_retained_depth]
+
+        final_measured_samples = np.minimum(corrected_measurable_samples, l_max_measurable)
 
         hist_measured, _ = np.histogram(final_measured_samples, bins=x_bins, density=False)
 
