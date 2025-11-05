@@ -61,9 +61,8 @@ def _asymmetric_gaussian_kernel(size, sigma_left, sigma_right=None):
 
     Args:
         size (int): The total size (number of points) of the kernel. Must be odd.
-        sigma (float): The standard deviation for the core of the Gaussian.
-        sigma_left (float, optional): The standard deviation for the left tail. Defaults to sigma.
-        sigma_right (float, optional): The standard deviation for the right tail. Defaults to sigma.
+        sigma_left (float): The standard deviation for the left tail.
+        sigma_right (float, optional): The standard deviation for the right tail. If None, the kernel is a symmetric gaussian with sigma = sigma_left.
 
     Returns:
         np.ndarray: The normalized 1D convolution kernel.
@@ -79,39 +78,11 @@ def _asymmetric_gaussian_kernel(size, sigma_left, sigma_right=None):
     
     kernel = np.zeros(size)
     
-    # Left tail
     kernel[:center] = np.exp(-(x[:center] - center)**2 / (2 * sigma_left**2))
-    # Center point
     kernel[center] = 1.0
-    # Right tail
     kernel[center+1:] = np.exp(-(x[center+1:] - center)**2 / (2 * sigma_right**2))
     
-    # Normalize the kernel to preserve the total number of tracks
     return kernel / np.sum(kernel)
-
-def calibrate_spectrum(x_mids, y_counts, x_scale_factor=1.0, y_scale_factor=1.0):
-        """
-        Applies an absolute calibration shift to the x-axis (track length) and y-axis (counts) of a spectrum.
-
-        This function scales the track lengths by the given factor and then re-bins
-        the counts onto the original binning structure using linear interpolation.
-
-        Args:
-            x_mids (np.ndarray): The midpoints of the original x_bins.
-            y_counts (np.ndarray): The array of track counts in each bin.
-            x_scale_factor (float): The multiplicative factor to apply to the x-axis.
-            y_scale_factor (float): The multiplicative factor to apply to the y-axis.
-
-        Returns:
-            np.ndarray: The calibrated track counts, re-binned onto the original
-                        x_bins structure.
-        """
-        x_scaled = x_mids * x_scale_factor
-
-        calibrated_y = np.interp(x_mids, x_scaled, y_counts)
-        calibrated_y *= (np.sum(y_counts) / np.sum(calibrated_y))
-
-        return calibrated_y*y_scale_factor
 
 # --- Main Paleodetector Class ---
 
@@ -782,3 +753,86 @@ class Paleodetector:
         total_tracks = [quad(total_tracks_interp, x_bins[i], x_bins[i+1])[0] for i in range(len(x_mids))]
 
         return total_tracks
+    
+    def smear_spectrum(self, counts, size, sigma_left, sigma_right=None):
+        """
+        Applies asymmetric gaussian smearing to the track length distribution.
+
+        Args:
+            counts (np.ndarray): Track counts in the bins.
+            size (int): The total size (number of points) of the kernel. Must be odd.
+            sigma_left (float): The standard deviation for the left tail.
+            sigma_right (float, optional): The standard deviation for the right tail. If None, the kernel is a symmetric gaussian with sigma = sigma_left.
+
+        Returns:
+            np.ndarray: The smeared track counts.
+        """        
+        smeared_counts = np.convolve(counts, _asymmetric_gaussian_kernel(size, sigma_left, sigma_right), mode='same')
+    
+        return smeared_counts
+    
+    def calibrate_spectrum(self, x_bins, counts, x_scale_factor=1.0, y_scale_factor=1.0):
+        """
+        Applies an absolute calibration shift to the x-axis (track length) and y-axis (counts) of a spectrum.
+
+        This function scales the track lengths by the given factor and then re-bins
+        the counts onto the original binning structure using linear interpolation.
+
+        Args:
+            x_bins (np.ndarray): The bin edges for track length spectrum [nm].
+            counts (np.ndarray): The array of track counts in each bin.
+            x_scale_factor (float): The multiplicative factor to apply to the x-axis.
+            y_scale_factor (float): The multiplicative factor to apply to the y-axis.
+
+        Returns:
+            np.ndarray: The calibrated track counts, re-binned onto the original
+                        x_bins structure.
+        """
+
+        x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
+
+        x_scaled = x_mids * x_scale_factor
+
+        calibrated_y = np.interp(x_mids, x_scaled, counts)
+        calibrated_y *= (np.sum(counts) / np.sum(calibrated_y))
+
+        return calibrated_y*y_scale_factor
+    
+    def slice_spectrum(self, x_bins, counts, angular_pdf=None, phi_cut_deg=0., l_min_measurable=1000, l_max_measurable=50000, f_phi= lambda phi: 1., n_samples=1e6):
+        """
+        Applies simulation of slicing of the tracks accounting for a (non-)isotropic track angle distribution.
+
+        Args:
+            x_bins (np.ndarray): The bin edges for track length spectrum [nm].
+            counts (np.ndarray): The array of track counts in each bin.
+            angular_pdf (np.ndarray): 
+        """
+        x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
+        phi_cut_rad = np.deg2rad(phi_cut_deg)
+
+        samples = np.random.choice(x_mids, size=int(n_samples), p=counts/np.sum(counts))
+        
+        phi_grid = np.linspace(0, np.pi / 2, 1000)
+    
+        if not angular_pdf:
+           angular_pdf = np.sin(phi_grid)
+    
+        sampled_angles = np.random.choice(phi_grid, size=int(n_samples), p=angular_pdf / np.sum(angular_pdf))
+    
+        is_retained = sampled_angles >= phi_cut_rad
+
+        samples_retained = samples[is_retained]
+        phi_retained = sampled_angles[is_retained]
+
+        seg_samples = np.random.uniform(low=0., high=samples_retained)
+
+        measured_samples = seg_samples * f_phi(phi_retained)
+
+        is_retained_length = measured_samples >= l_min_measurable
+        final_measured_samples = np.minimum(measured_samples[is_retained_length], l_max_measurable)
+
+        hist_measured, _ = np.histogram(final_measured_samples, bins=x_bins, density=False)
+
+        hist_norm = hist_measured * (np.sum(counts) / n_samples)
+
+        return hist_norm
