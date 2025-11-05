@@ -800,12 +800,27 @@ class Paleodetector:
     
     def slice_spectrum(self, x_bins, counts, angular_pdf=None, phi_cut_deg=0., l_min_measurable=1000, l_max_measurable=50000, f_phi= lambda phi: 1., n_samples=1e6):
         """
-        Applies simulation of slicing of the tracks accounting for a (non-)isotropic track angle distribution.
+        Applies Monte Carlo simulation of track slicing, accounting for geometrical, angular, 
+        and experimental filtering effects (min/max measurable length).
 
         Args:
-            x_bins (np.ndarray): The bin edges for track length spectrum [nm].
-            counts (np.ndarray): The array of track counts in each bin.
-            angular_pdf (np.ndarray): 
+            x_bins (np.ndarray): The bin edges for the true track length spectrum R [nm].
+            counts (np.ndarray): The array of true track counts N(R) in each bin.
+            angular_pdf (np.ndarray, optional): Normalized array P(phi) for the angle distribution 
+                                                of tracks relative to the surface normal. Defaults to isotropic (sin(phi)).
+            phi_cut_deg (float): Angular filter threshold (tracks with phi < phi_cut are rejected). 
+                                 Set to 0.0 for highly-faithful plasma etching.
+            l_min_measurable (float): Minimum measurable segment length, L_min [nm]. Tracks shorter than 
+                                      this are lost due to etching away or resolution limits.
+            l_max_measurable (float): Maximum measurable segment length, L_max [nm]. This caps 
+                                      the pit size due to saturation effects in the etching process.
+            f_phi (callable): Function applied to the segment length L_seg * f_phi(phi). Corrects 
+                              for anisotropic enlargement (e.g., set to lambda phi: 1.0 for plasma etching).
+            n_samples (int): Number of Monte Carlo tracks to simulate for accurate statistics.
+
+        Returns:
+            np.ndarray: The resulting measured track count histogram N(L_meas), normalized to 
+                        the total input counts.
         """
         x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
         phi_cut_rad = np.deg2rad(phi_cut_deg)
