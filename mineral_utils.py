@@ -441,7 +441,7 @@ class Paleodetector:
         return total_tracks
 
     
-    def _interpolate_flux_scenarios(self, scenario_config):
+    def _interpolate_flux_scenarios(self, scenario_config, species='mu'):
         """
         Interpolates muon flux data for a given scenario configuration.
         
@@ -451,6 +451,14 @@ class Paleodetector:
         """
         times = []
         flux_arrays = []
+
+        if species == 'mu':
+            col = 1
+        elif species == 'n0':
+            col = 2
+        else:
+            raise ValueError('Accepted species are mu and n0')
+        
         for scenario in scenario_config['event_fluxes'].items():
             times.append(scenario[0])
             _, filename_tag = scenario[1]
@@ -459,7 +467,7 @@ class Paleodetector:
                 print(f"Flux file not found: {flux_filepath}")
                 continue
             
-            energies, flux = np.loadtxt(flux_filepath, usecols=(0, 1), unpack=True, skiprows=1)
+            energies, flux = np.loadtxt(flux_filepath, usecols=(0, col), unpack=True)
             flux_arrays.append(flux)
         
         flux_arrays = np.array(flux_arrays)
