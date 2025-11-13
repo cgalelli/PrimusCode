@@ -95,7 +95,7 @@ class Paleodetector:
     paleo-detector analysis.
     """
     
-    def __init__(self, mineral_config, data_path_prefix="Data/"):
+    def __init__(self, mineral_config, data_path_prefix="Data"):
         """
         Initializes the Paleodetector object and sets up its properties and data caches.
 
