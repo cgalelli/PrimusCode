@@ -6,3 +6,4 @@ Data/inference_results/*.csv
 _pycache_/
 *.pyc
 Primus_analysis.ipynb
+Data/Geant_data/build/*
