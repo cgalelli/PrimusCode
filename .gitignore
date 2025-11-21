@@ -7,3 +7,5 @@ _pycache_/
 *.pyc
 Primus_analysis.ipynb
 Data/Geant_data/build/*
+Data/Geant_data/build/output/*
+Data/Geant_data/build/CMakeFiles/*
