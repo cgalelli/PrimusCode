@@ -6,6 +6,4 @@ Data/inference_results/*.csv
 _pycache_/
 *.pyc
 Primus_analysis.ipynb
-Data/Geant_data/build/*
-Data/Geant_data/build/output/*
-Data/Geant_data/build/CMakeFiles/*
+Data/Geant4_data/build/*
