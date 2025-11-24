@@ -3,7 +3,6 @@ import os
 from scipy.interpolate import interp1d, InterpolatedUnivariateSpline
 from scipy.integrate import quad
 from mendeleev import element
-from WIMpy import DMUtils as DMU
 from tqdm import tqdm
 from multiprocessing import Pool
 
@@ -331,6 +330,14 @@ class Paleodetector:
             np.ndarray: The differential track rate (dR/dx) [events/kg/Myr/nm].
         """
         print(f"Calculating neutrino background for source: {flux_name}...")
+        try:        
+            from WIMpy import DMUtils as DMU
+        except ImportError as e:
+            raise RuntimeError(
+                "The `WIMpy` package is required for this function. "
+                "Please install to use neutrino spectrum calculations."
+            ) from e
+        
         x_mid = x_bins[:-1] + np.diff(x_bins) / 2.0
         dRdx = np.zeros_like(x_mid)
 
