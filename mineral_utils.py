@@ -2,6 +2,7 @@ import numpy as np
 import os
 from scipy.interpolate import interp1d, InterpolatedUnivariateSpline
 from scipy.integrate import quad
+from scipy.stats import norm
 from mendeleev import element
 from tqdm import tqdm
 from multiprocessing import Pool
@@ -110,6 +111,7 @@ class Paleodetector:
         self._neutron_bkg_cache = {}
         self._flux_interpolators = {}
         self._energy_GeV = {}
+        self._depth_interpolators = {}
         
         print(f"Initialized Paleodetector: {self.name}")
 
@@ -139,6 +141,26 @@ class Paleodetector:
             
         self._nuclear_data_cache[filename] = np.loadtxt(filepath, usecols=cols_to_use, unpack=True)
         return self._nuclear_data_cache[filename]
+    
+    def _load_depth_interpolators(self):
+        pen = []
+        width = []
+        pri_energies = np.logspace(-3, 3, 10)
+
+
+        for energy_name in pri_energies:
+
+            filepathm = f"Data/Geant4_data/StdRock_mu-/outNuclei_{energy_name:.6f}.txt"
+            energiesm, depthm, rem_energy = np.loadtxt(filepathm, usecols=(2, 3, 5), dtype = str, unpack=True)
+            energiesm = energiesm.astype(float)
+            depthm = 500 - depthm.astype(float)/1000.
+            rem_energy = rem_energy.astype(float)
+
+            pen.append(depthm[rem_energy == 0].mean())
+            width.append(depthm[rem_energy == 0].std())
+
+        self._depth_interpolators['maxdepth'] = interp1d(pri_energies[:-1], pen[:-1], kind='linear', fill_value='extrapolate', bounds_error=False)
+        self._depth_interpolators['meanwidth'] = interp1d(pri_energies[:-1], width[:-1], kind='linear', fill_value='extrapolate', bounds_error=False)
     
     def _load_neutron_bkg(self):
         """
@@ -440,6 +462,38 @@ class Paleodetector:
 
         return total_tracks
 
+    def _load_depth_interpolators(self, species='mu-'):
+        """
+        Loads depth interpolators for maximum penetration depth and mean width
+        from Geant4 simulation data for a given particle species.
+
+        Args:
+            species (str, optional): The particle species to simulate ('mu+', 'mu-', or 'neutron'). Defaults to 'mu-'.
+        """
+        pen = []
+        width = []
+        pri_energies = np.logspace(-3, 3, 10)
+
+        tab_species = 'mu-' if species == 'mu-'or species == 'mu+' else 'neutron'
+
+        for energy_name in pri_energies:
+
+            filepath = os.path.join(self.data_path, "Geant4_data", f"StdRock_{tab_species}", f"outNuclei_{energy_name:.6f}.txt")
+            if not os.path.exists(filepath):
+                print(f"Geant4 data file not found: {filepath}")
+                continue
+
+            energies, depth, rem_energy = np.loadtxt(filepath, usecols=(2, 3, 5), dtype = str, unpack=True)
+            energies = energies.astype(float)
+            depth = 500 - depth.astype(float)/1000.
+            rem_energy = rem_energy.astype(float)
+
+            pen.append(depth[rem_energy == 0].mean()*2.65)
+            width.append(depth[rem_energy == 0].std()*2.65)
+
+        self._depth_interpolators[species] = {}
+        self._depth_interpolators[species]['maxdepth'] = interp1d(pri_energies[:-1], pen[:-1], kind='linear', fill_value='extrapolate', bounds_error=False)
+        self._depth_interpolators[species]['meanwidth'] = interp1d(pri_energies[:-1], width[:-1], kind='linear', fill_value='extrapolate', bounds_error=False)
     
     def _interpolate_flux_scenarios(self, scenario_config, species='mu-'):
         """
@@ -488,45 +542,6 @@ class Paleodetector:
         self._flux_interpolators[f'{scenario_config["name"]}_{species}'] = interpolators
         self._energy_GeV[scenario_config["name"]] = energies
 
-    def _calculate_flux_weights(self, t_kyr, scenario_name, energy_bins_gev, total_simulated_particles, depth_mwe=0, species='mu-'):
-        """
-        Integrates a particle flux model over energy bins to get event weights for Geant4 simulations.
-
-        Args:
-            t_kyr (float): The time in kiloyears for which to calculate the flux.
-            scenario_name (str): The name of the flux scenario to use.
-            energy_bins_gev (np.ndarray): The energy bin edges [GeV].
-            total_simulated_particles (float): The number of particles simulated in each Geant4 run.
-            depth_mwe (float, optional): The shielding depth in meters water equivalent [m.w.e.]. Defaults to 0.
-            species (str, optional): The particle species to simulate ('mu+', 'mu-', or 'neutron'). Defaults to 'mu-'.
-
-        Returns:
-            list: A list of weights for each energy bin.
-        """  
-        weights = []
-        if not self._flux_interpolators[f'{scenario_name}_{species}']:
-            raise ValueError(f"Flux interpolators not initialized for scenario {scenario_name} and species {species}.")
-
-        flux_val = np.array([interp_func(t_kyr) for interp_func in self._flux_interpolators[f'{scenario_name}_{species}']])
-
-        flux_interpolator = log_interp1d(self._energy_GeV[scenario_name], flux_val)
-        e_attenuated = np.exp(-depth_mwe / 2500.0)*(self._energy_GeV[scenario_name]+500)-500
-        
-        if e_attenuated[e_attenuated>0.].size == 0:
-            weights = [0.0 for _ in range(len(energy_bins_gev) - 1)]
-            return weights
-        
-        else:
-            flux_attenuated = log_interp1d(e_attenuated[e_attenuated>0.], flux_interpolator(self._energy_GeV[scenario_name])[e_attenuated>0.] *np.exp(depth_mwe / 2500.0))
-
-            for i in range(len(energy_bins_gev) - 1):
-                integrated_flux, _ = quad(flux_attenuated, energy_bins_gev[i], energy_bins_gev[i+1])
-                if np.isnan(integrated_flux) or integrated_flux <= 0:
-                    integrated_flux = 0.0
-                weight = (integrated_flux * SECONDS_PER_MYR * 1e-4) / total_simulated_particles
-                weights.append(weight)
-            return weights
-
     def _get_all_fragments(self, energy_names_gev, species='mu-'):
         """
         Dynamically determines the list of all nuclear fragments from Geant4 output files.
@@ -551,7 +566,7 @@ class Paleodetector:
                         all_fragments.add(name)
         return sorted(list(all_fragments))
 
-    def _process_geant4_data(self, t_kyr, scenario_name, energy_bins_gev, depth_mwe=0., total_simulated_particles=1e5, target_thickness_cm=1000, species='mu-'):
+    def _process_geant4_data(self, t_kyr, scenario_name, energy_bins_gev, depth_mwe=0., total_simulated_particles=1e5, target_thickness_mm=5., species='mu-'):
         """
         Processes raw Geant4 data for a given scenario, creating a normalized recoil spectrum file.
 
@@ -559,33 +574,63 @@ class Paleodetector:
             t_kyr (float): The time in kiloyears for which to process the data.
             scenario_name (str): The name of the flux scenario to use.
             energy_bins_gev (np.ndarray): The energy bin edges [GeV].
-            target_thickness_cm (float): The thickness of the target in the Geant4 simulation [cm].
+            target_thickness_mm (float): The thickness of the target in the Geant4 simulation [mm].
             depth_mwe (float, optional): Shielding depth [m.w.e.]. Defaults to 0.
             total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.
             species (str, optional): The particle species to simulate ('mu+', 'mu-', or 'neutron'). Defaults to 'mu-'.
         """
         
-        weights = self._calculate_flux_weights(t_kyr, scenario_name, energy_bins_gev, total_simulated_particles, depth_mwe, species)
+        depth_min = depth_mwe
+        depth_max = depth_mwe + target_thickness_mm * 0.001
+
+        if not self._flux_interpolators[f'{scenario_name}_{species}']:
+            raise ValueError(f"Flux interpolators not initialized for scenario {scenario_name} and species {species}.")
+
+        if not self._depth_interpolators[species]:
+            self._load_depth_interpolators(species)
+
+        flux_val = np.array([interp_func(t_kyr) for interp_func in self._flux_interpolators[f'{scenario_name}_{species}']])
+
+        flux_interpolator = log_interp1d(self._energy_GeV[scenario_name], flux_val)
+        maxdepth = self._depth_interpolators[species]['maxdepth']
+        meanwidth = self._depth_interpolators[species]['meanwidth']
+
         all_fragments = self._get_all_fragments(energy_bins_gev[:-1], species)
-        
+
         geant4_input_dir = os.path.join(self.data_path, "Geant4_data", f"{self.name}_{species}")
                 
         all_recoil_spectra = {}
 
         fragment_spectra = {frag: np.zeros(len(RECOIL_ENERGY_BINS_MEV) - 1) for frag in all_fragments}
+
         for i, energy_name in enumerate(energy_bins_gev[:-1]):
         
+            integrated_flux, _ = quad(flux_interpolator, energy_bins_gev[i], energy_bins_gev[i+1])
+            if np.isnan(integrated_flux) or integrated_flux <= 0:
+                integrated_flux = 0.0
+
+            tail_integral = quad(lambda e: quad(lambda x: np.clip(np.exp(-(x - maxdepth(e))/meanwidth(e)), 0. , 1.), depth_min, depth_max), energy_bins_gev[i], energy_bins_gev[i+1]) 
+            weight_elastic = integrated_flux*tail_integral    
+
+            if species == 'mu-':
+                peak_integral = quad(lambda e: quad(lambda x: norm.pdf(x, loc = maxdepth(e), scale = meanwidth(e)), depth_min, depth_max), energy_bins_gev[i], energy_bins_gev[i+1])
+                weight_peak = integrated_flux*peak_integral
+
             filepath = os.path.join(geant4_input_dir, f"outNuclei_{energy_name:.6f}.txt")
             if not os.path.exists(filepath): continue
 
-            names, _, energies = np.loadtxt(filepath, usecols=(0, 1, 2), dtype=str, unpack=True)
-            energies = energies.astype(float)
+            names, rec_energies, rem_energies = np.loadtxt(filepath, usecols=(0, 2, 5), dtype=str, unpack=True)
+            rec_energies = rec_energies.astype(float)
+            rem_energies = rem_energies.astype(float)
 
-            for name, energy in zip(names, energies):
+            for name, rec_energy, rem_energy in zip(names, rec_energies, rem_energies):
                 if name in fragment_spectra:
-                    bin_index = np.digitize(energy, RECOIL_ENERGY_BINS_MEV) - 1
+                    bin_index = np.digitize(rec_energy, RECOIL_ENERGY_BINS_MEV) - 1
                     if 0 <= bin_index < len(fragment_spectra[name]):
-                        fragment_spectra[name][bin_index] += weights[i]
+                        if rem_energy == 0.0 and species == 'mu-':
+                            fragment_spectra[name][bin_index] += weight_peak
+                        else:
+                            fragment_spectra[name][bin_index] += weight_elastic
         all_recoil_spectra.update(fragment_spectra)
 
         output_dir = os.path.join(self.data_path, "processed_recoils")
@@ -593,7 +638,7 @@ class Paleodetector:
         output_filepath = os.path.join(output_dir, f"{self.name}_{species}_recoil_{scenario_name}_{t_kyr}kyr_{depth_mwe:.0f}mwe.npz")
 
         bin_widths_mev = np.diff(RECOIL_ENERGY_BINS_MEV)
-        norm_factor = (bin_widths_mev * target_thickness_cm * self.config['density_g_cm3'] * 1e-3)
+        norm_factor = (bin_widths_mev * 1e-2 * self.config['density_g_cm3'] * 1e-3 * total_simulated_particles)/ (SECONDS_PER_MYR * 1e-4)
 
         normalized_spectra = {}
         for name, spectrum in all_recoil_spectra.items():
@@ -646,7 +691,7 @@ class Paleodetector:
             e_at_x = x_to_e_func(x_mid_nm)
             
             dRdx_nucleus = dRdEr_interp(e_at_x) * x_to_dedx_func(x_mid_nm)
-            dRdx_by_nucleus[nucleus_name] = dRdx_nucleus
+            dRdx_by_nucleus[nuclide_name] = dRdx_nucleus
             dRdx_total += dRdx_nucleus
             
         dRdx_by_nucleus["total"] = dRdx_total
