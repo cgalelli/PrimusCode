@@ -11,14 +11,12 @@ class StackingAction : public G4UserStackingAction
 {
   public:
     // The constructor now takes RunAction*
-    StackingAction(RunAction* runAction);
+    StackingAction();
     virtual ~StackingAction();
 
   public:
     virtual G4ClassificationOfNewTrack ClassifyNewTrack(const G4Track*);
 
-  private:
-    RunAction* fRunAction;
 };
 
 #endif

@@ -18,7 +18,7 @@ DetectorConstruction::DetectorConstruction()
 : G4VUserDetectorConstruction(),
   fLogicTarget(nullptr), fLogicWorld(nullptr), 
   fTargetMaterial(nullptr), fWorldMaterial(nullptr),
-  fTargetLength(10*m), fTargetRadius(10*m), // Default values
+  fTargetLength(200*m), fTargetRadius(10*m), // Default values
   fMessenger(nullptr)
 {
   fMessenger = new DetectorMessenger(this);
@@ -42,6 +42,8 @@ void DetectorConstruction::DefineMaterials()
   G4Element* Si = nist->FindOrBuildElement("Si");
   G4Element* Cl = nist->FindOrBuildElement("Cl");
   G4Element* Fe = nist->FindOrBuildElement("Fe");
+  G4Element* Ca = nist->FindOrBuildElement("Ca");
+  G4Element* C  = nist->FindOrBuildElement("C");
 
   // --- Default World Material (Vacuum) ---
   fWorldMaterial = nist->FindOrBuildMaterial("G4_Galactic");
@@ -60,6 +62,16 @@ void DetectorConstruction::DefineMaterials()
   Olivine->AddElement(Fe, 0.029); // Fe_0.2
   Olivine->AddElement(Si, 0.571);
   Olivine->AddElement(O, 0.143);
+
+  G4Material* StdRock = new G4Material("StdRock",2.65*CLHEP::g/CLHEP::cm3,4, kStateSolid );
+  StdRock->AddElement(O,  52.*perCent);
+  StdRock->AddElement(Ca, 27.*perCent);
+  StdRock->AddElement(C,  12.*perCent);
+  StdRock->AddElement(Mg,  9.*perCent);
+
+  G4Material* Water = new G4Material("H2O",1.*CLHEP::g/CLHEP::cm3,2);
+  Water->AddElement(H, 2);
+  Water->AddElement(O, 1);
 
   // --- Standard Materials (Optional) ---
   nist->FindOrBuildMaterial("G4_SiO2");

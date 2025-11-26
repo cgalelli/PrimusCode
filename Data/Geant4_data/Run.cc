@@ -8,6 +8,7 @@
 #include "RunAction.hh"
 #include "EventAction.hh"
 #include "StackingAction.hh"
+#include "SteppingAction.hh"
 
 int main(int argc,char** argv) {
   G4RunManager* runManager = new G4RunManager;
@@ -25,7 +26,9 @@ int main(int argc,char** argv) {
   runManager->SetUserAction(runAction);
   
   runManager->SetUserAction(new EventAction());
-  runManager->SetUserAction(new StackingAction(runAction));
+  runManager->SetUserAction(new StackingAction());
+  runManager->SetUserAction(new SteppingAction(runAction));
+  
 
   // 4. Visualization & UI
 //  G4VisManager* visManager = new G4VisExecutive;
