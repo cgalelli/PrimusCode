@@ -474,7 +474,7 @@ class Paleodetector:
         width = []
         pri_energies = np.logspace(-3, 3, 10)
 
-        tab_species = 'mu-' if species == 'mu-'or species == 'mu+' else 'neutron'
+        tab_species = 'mu-' if species == 'mu-' or species == 'mu+' else 'neutron'
 
         for energy_name in pri_energies:
 
@@ -492,8 +492,8 @@ class Paleodetector:
             width.append(depth[rem_energy == 0].std()*2.65)
 
         self._depth_interpolators[species] = {}
-        self._depth_interpolators[species]['maxdepth'] = interp1d(pri_energies[:-1], pen[:-1], kind='linear', fill_value='extrapolate', bounds_error=False)
-        self._depth_interpolators[species]['meanwidth'] = interp1d(pri_energies[:-1], width[:-1], kind='linear', fill_value='extrapolate', bounds_error=False)
+        self._depth_interpolators[species]['maxdepth'] = interp1d(pri_energies[1:-1], pen[1:-1], kind='linear', fill_value='extrapolate', bounds_error=False)
+        self._depth_interpolators[species]['meanwidth'] = interp1d(pri_energies[1:-1], width[1:-1], kind='linear', fill_value='extrapolate', bounds_error=False)
     
     def _interpolate_flux_scenarios(self, scenario_config, species='mu-'):
         """
@@ -566,7 +566,7 @@ class Paleodetector:
                         all_fragments.add(name)
         return sorted(list(all_fragments))
 
-    def _process_geant4_data(self, t_kyr, scenario_name, energy_bins_gev, depth_mwe=0., total_simulated_particles=1e5, target_thickness_mm=5., species='mu-'):
+    def _process_geant4_data(self, t_kyr, scenario_name, energy_bins_gev, depth_mwe=0., total_simulated_particles=1e4, target_thickness_mm=5., species='mu-'):
         """
         Processes raw Geant4 data for a given scenario, creating a normalized recoil spectrum file.
 
@@ -602,19 +602,15 @@ class Paleodetector:
         all_recoil_spectra = {}
 
         fragment_spectra = {frag: np.zeros(len(RECOIL_ENERGY_BINS_MEV) - 1) for frag in all_fragments}
-
+    
         for i, energy_name in enumerate(energy_bins_gev[:-1]):
-        
-            integrated_flux, _ = quad(flux_interpolator, energy_bins_gev[i], energy_bins_gev[i+1])
-            if np.isnan(integrated_flux) or integrated_flux <= 0:
-                integrated_flux = 0.0
 
-            tail_integral = quad(lambda e: quad(lambda x: np.clip(np.exp(-(x - maxdepth(e))/meanwidth(e)), 0. , 1.), depth_min, depth_max), energy_bins_gev[i], energy_bins_gev[i+1]) 
-            weight_elastic = integrated_flux*tail_integral    
-
+            e_min = energy_bins_gev[i]
+            e_max = energy_bins_gev[i+1]
+            weight_elastic = quad(lambda e: quad(lambda x: np.clip(np.exp(-(x - maxdepth(e))/meanwidth(e)), 0. , 1.), depth_min, depth_max)[0]*flux_interpolator(e), e_min, e_max)[0]
+            
             if species == 'mu-':
-                peak_integral = quad(lambda e: quad(lambda x: norm.pdf(x, loc = maxdepth(e), scale = meanwidth(e)), depth_min, depth_max), energy_bins_gev[i], energy_bins_gev[i+1])
-                weight_peak = integrated_flux*peak_integral
+                weight_peak = quad(lambda e: quad(lambda x: norm.pdf(x, loc = maxdepth(e), scale = meanwidth(e))*(maxdepth(e) + meanwidth(e)), depth_min, depth_max)[0]*flux_interpolator(e), e_min, e_max)[0]
 
             filepath = os.path.join(geant4_input_dir, f"outNuclei_{energy_name:.6f}.txt")
             if not os.path.exists(filepath): continue
@@ -635,7 +631,7 @@ class Paleodetector:
 
         output_dir = os.path.join(self.data_path, "processed_recoils")
         os.makedirs(output_dir, exist_ok=True)
-        output_filepath = os.path.join(output_dir, f"{self.name}_{species}_recoil_{scenario_name}_{t_kyr}kyr_{depth_mwe:.0f}mwe.npz")
+        output_filepath = os.path.join(output_dir, f"{self.name}_{species}_recoil_{scenario_name}_{t_kyr}kyr_{depth_mwe:.1f}mwe.npz")
 
         bin_widths_mev = np.diff(RECOIL_ENERGY_BINS_MEV)
         norm_factor = (bin_widths_mev * 1e-2 * self.config['density_g_cm3'] * 1e-3 * total_simulated_particles)/ (SECONDS_PER_MYR * 1e-4)
@@ -720,7 +716,9 @@ class Paleodetector:
         """
         t_kyr = round(t_kyr, time_precision)
 
-        filepath = os.path.join(self.data_path, "processed_recoils", f"{self.name}_{species}_recoil_{scenario_name}_{t_kyr}kyr_{depth_mwe:.0f}mwe.npz")
+        self._load_depth_interpolators(species)
+
+        filepath = os.path.join(self.data_path, "processed_recoils", f"{self.name}_{species}_recoil_{scenario_name}_{t_kyr}kyr_{depth_mwe:.1f}mwe.npz")
         if not os.path.exists(filepath):
             self._process_geant4_data(t_kyr, scenario_name, energy_bins_gev, depth_mwe, total_simulated_particles, target_thickness_cm, species)
 
