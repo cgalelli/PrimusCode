@@ -816,116 +816,116 @@ class Paleodetector:
 
         return total_tracks
     
-    def smear_spectrum(self, counts, size, sigma_left, sigma_right=None):
-        """
-        Applies asymmetric gaussian smearing to the track length distribution.
+def smear_spectrum(counts, size, sigma_left, sigma_right=None):
+    """
+    Applies asymmetric gaussian smearing to the track length distribution.
 
-        Args:
-            counts (np.ndarray): Track counts in the bins.
-            size (int): The total size (number of points) of the kernel. Must be odd.
-            sigma_left (float): The standard deviation for the left tail.
-            sigma_right (float, optional): The standard deviation for the right tail. If None, the kernel is a symmetric gaussian with sigma = sigma_left.
+    Args:
+        counts (np.ndarray): Track counts in the bins.
+        size (int): The total size (number of points) of the kernel. Must be odd.
+        sigma_left (float): The standard deviation for the left tail.
+        sigma_right (float, optional): The standard deviation for the right tail. If None, the kernel is a symmetric gaussian with sigma = sigma_left.
 
-        Returns:
-            np.ndarray: The smeared track counts.
-        """        
-        smeared_counts = np.convolve(counts, _asymmetric_gaussian_kernel(size, sigma_left, sigma_right), mode='same')
+    Returns:
+        np.ndarray: The smeared track counts.
+    """        
+    smeared_counts = np.convolve(counts, _asymmetric_gaussian_kernel(size, sigma_left, sigma_right), mode='same')
+
+    return smeared_counts
+
+def calibrate_spectrum(x_bins, counts, x_scale_factor=1.0, y_scale_factor=1.0):
+    """
+    Applies an absolute calibration shift to the x-axis (track length) and y-axis (counts) of a spectrum.
+
+    This function scales the track lengths by the given factor and then re-bins
+    the counts onto the original binning structure using linear interpolation.
+
+    Args:
+        x_bins (np.ndarray): The bin edges for track length spectrum [nm].
+        counts (np.ndarray): The array of track counts in each bin.
+        x_scale_factor (float): The multiplicative factor to apply to the x-axis.
+        y_scale_factor (float): The multiplicative factor to apply to the y-axis.
+
+    Returns:
+        np.ndarray: The calibrated track counts, re-binned onto the original
+                    x_bins structure.
+    """
+
+    x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
+
+    x_scaled = x_mids * x_scale_factor
+
+    calibrated_y = np.interp(x_mids, x_scaled, counts)
+    calibrated_y *= (np.sum(counts) / np.sum(calibrated_y))
+
+    return calibrated_y*y_scale_factor
+
+def slice_spectrum(x_bins, counts, angular_pdf=None, phi_cut_deg=0., l_min_measurable=300., l_max_measurable=50000., pit_width=500., bulk_etching_depth=100., f_phi= lambda phi: 1., n_samples=1e6, correction=True):
+    """
+    Applies Monte Carlo simulation of track slicing, accounting for geometrical, angular, 
+    and experimental filtering effects (min/max measurable length).
+
+    Args:
+        x_bins (np.ndarray): The bin edges for the true track length spectrum R [nm].
+        counts (np.ndarray): The array of true track counts N(R) in each bin.
+        angular_pdf (np.ndarray, optional): Normalized array P(phi) for the angle distribution 
+                                            of tracks relative to the surface normal. Defaults to isotropic (sin(phi)).
+        phi_cut_deg (float): Angular filter threshold (tracks with phi < phi_cut are rejected). 
+                                Set to 0.0 for highly-faithful plasma etching.
+        l_min_measurable (float): Minimum measurable segment length, L_min [nm]. Tracks shorter than 
+                                    this are lost due resolution limits.
+        l_max_measurable (float): Maximum measurable segment length, L_max [nm]. This caps 
+                                    the pit size due to saturation effects in the etching process.
+        pit_width (float): Typical width of the etched pit [nm]. 
+                            Tracks with parallel footprint smaller than this threshold will be measured by this.
+        bulk_etching_depth (float): Minimum vertical development of the track [nm]. 
+                                    Tracks shallower than this are lost due to etching away.
+        f_phi (callable): Function applied to the segment length L_seg * f_phi(phi). Corrects 
+                            for anisotropic enlargement (e.g., set to lambda phi: 1.0 for plasma etching).
+        n_samples (int): Number of Monte Carlo tracks to simulate for accurate statistics.
+        correction (bool): If True, applies pit_width correction. If not, the pit_width correction is ignored.
+
+    Returns:
+        np.ndarray: The resulting measured track count histogram N(L_meas), normalized to 
+                    the total input counts.
+    """
+    x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
+    phi_cut_rad = np.deg2rad(phi_cut_deg)
+
+    samples = np.random.choice(x_mids, size=int(n_samples), p=counts/np.sum(counts))
     
-        return smeared_counts
-    
-    def calibrate_spectrum(self, x_bins, counts, x_scale_factor=1.0, y_scale_factor=1.0):
-        """
-        Applies an absolute calibration shift to the x-axis (track length) and y-axis (counts) of a spectrum.
+    phi_grid = np.linspace(0, np.pi / 2, 1000)
 
-        This function scales the track lengths by the given factor and then re-bins
-        the counts onto the original binning structure using linear interpolation.
+    if not angular_pdf:
+        angular_pdf = np.sin(phi_grid)
 
-        Args:
-            x_bins (np.ndarray): The bin edges for track length spectrum [nm].
-            counts (np.ndarray): The array of track counts in each bin.
-            x_scale_factor (float): The multiplicative factor to apply to the x-axis.
-            y_scale_factor (float): The multiplicative factor to apply to the y-axis.
+    sampled_angles = np.random.choice(phi_grid, size=int(n_samples), p=angular_pdf / np.sum(angular_pdf))
 
-        Returns:
-            np.ndarray: The calibrated track counts, re-binned onto the original
-                        x_bins structure.
-        """
+    is_retained = sampled_angles >= phi_cut_rad
 
-        x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
+    samples_retained = samples[is_retained]
+    phi_retained = sampled_angles[is_retained]
 
-        x_scaled = x_mids * x_scale_factor
+    seg_samples = np.random.uniform(low=0., high=samples_retained)
 
-        calibrated_y = np.interp(x_mids, x_scaled, counts)
-        calibrated_y *= (np.sum(counts) / np.sum(calibrated_y))
+    measured_samples = seg_samples * f_phi(phi_retained)
 
-        return calibrated_y*y_scale_factor
-    
-    def slice_spectrum(self, x_bins, counts, angular_pdf=None, phi_cut_deg=0., l_min_measurable=300., l_max_measurable=50000., pit_width=500., bulk_etching_depth=100., f_phi= lambda phi: 1., n_samples=1e6, correction=True):
-        """
-        Applies Monte Carlo simulation of track slicing, accounting for geometrical, angular, 
-        and experimental filtering effects (min/max measurable length).
+    is_retained_length = measured_samples >= l_min_measurable
 
-        Args:
-            x_bins (np.ndarray): The bin edges for the true track length spectrum R [nm].
-            counts (np.ndarray): The array of true track counts N(R) in each bin.
-            angular_pdf (np.ndarray, optional): Normalized array P(phi) for the angle distribution 
-                                                of tracks relative to the surface normal. Defaults to isotropic (sin(phi)).
-            phi_cut_deg (float): Angular filter threshold (tracks with phi < phi_cut are rejected). 
-                                 Set to 0.0 for highly-faithful plasma etching.
-            l_min_measurable (float): Minimum measurable segment length, L_min [nm]. Tracks shorter than 
-                                      this are lost due resolution limits.
-            l_max_measurable (float): Maximum measurable segment length, L_max [nm]. This caps 
-                                      the pit size due to saturation effects in the etching process.
-            pit_width (float): Typical width of the etched pit [nm]. 
-                               Tracks with parallel footprint smaller than this threshold will be measured by this.
-            bulk_etching_depth (float): Minimum vertical development of the track [nm]. 
-                                        Tracks shallower than this are lost due to etching away.
-            f_phi (callable): Function applied to the segment length L_seg * f_phi(phi). Corrects 
-                              for anisotropic enlargement (e.g., set to lambda phi: 1.0 for plasma etching).
-            n_samples (int): Number of Monte Carlo tracks to simulate for accurate statistics.
-            correction (bool): If True, applies pit_width correction. If not, the pit_width correction is ignored.
+    measurable_samples = measured_samples[is_retained_length]
+    measurable_angles = phi_retained[is_retained_length]
 
-        Returns:
-            np.ndarray: The resulting measured track count histogram N(L_meas), normalized to 
-                        the total input counts.
-        """
-        x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
-        phi_cut_rad = np.deg2rad(phi_cut_deg)
+    is_retained_depth = measurable_samples * np.sin(measurable_angles) >= bulk_etching_depth
 
-        samples = np.random.choice(x_mids, size=int(n_samples), p=counts/np.sum(counts))
-        
-        phi_grid = np.linspace(0, np.pi / 2, 1000)
-    
-        if not angular_pdf:
-           angular_pdf = np.sin(phi_grid)
-    
-        sampled_angles = np.random.choice(phi_grid, size=int(n_samples), p=angular_pdf / np.sum(angular_pdf))
-    
-        is_retained = sampled_angles >= phi_cut_rad
+    if correction:
+        corrected_measurable_samples = np.where(measurable_samples[is_retained_depth] * np.cos(measurable_angles[is_retained_depth]) >= pit_width/2., (pit_width/2.)+measurable_samples[is_retained_depth] * np.cos(measurable_angles[is_retained_depth]), pit_width)
+    else:
+        corrected_measurable_samples = measurable_samples[is_retained_depth]
 
-        samples_retained = samples[is_retained]
-        phi_retained = sampled_angles[is_retained]
+    final_measured_samples = np.minimum(corrected_measurable_samples, l_max_measurable)
 
-        seg_samples = np.random.uniform(low=0., high=samples_retained)
+    hist_measured, _ = np.histogram(final_measured_samples, bins=x_bins, density=False)
 
-        measured_samples = seg_samples * f_phi(phi_retained)
+    hist_norm = hist_measured * (np.sum(counts) / n_samples)
 
-        is_retained_length = measured_samples >= l_min_measurable
-
-        measurable_samples = measured_samples[is_retained_length]
-        measurable_angles = phi_retained[is_retained_length]
-
-        is_retained_depth = measurable_samples * np.sin(measurable_angles) >= bulk_etching_depth
-
-        if correction:
-            corrected_measurable_samples = np.where(measurable_samples[is_retained_depth] * np.cos(measurable_angles[is_retained_depth]) >= pit_width/2., (pit_width/2.)+measurable_samples[is_retained_depth] * np.cos(measurable_angles[is_retained_depth]), pit_width)
-        else:
-            corrected_measurable_samples = measurable_samples[is_retained_depth]
-
-        final_measured_samples = np.minimum(corrected_measurable_samples, l_max_measurable)
-
-        hist_measured, _ = np.histogram(final_measured_samples, bins=x_bins, density=False)
-
-        hist_norm = hist_measured * (np.sum(counts) / n_samples)
-
-        return hist_norm
+    return hist_norm
