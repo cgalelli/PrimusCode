@@ -2,7 +2,6 @@ import numpy as np
 import os
 from scipy.interpolate import interp1d, InterpolatedUnivariateSpline
 from scipy.integrate import quad
-from scipy.stats import norm
 from mendeleev import element
 from tqdm import tqdm
 from multiprocessing import Pool
@@ -11,7 +10,7 @@ from multiprocessing import Pool
 PROTON_MASS_MEV = 938.3
 NEUTRON_MASS_MEV = 939.6
 AVOGADRO_NUMBER = 6.022e23
-SECONDS_PER_MYR = 60 * 60 * 24 * 365 * 1e6
+MYR_PER_SECOND = 1/ (60 * 60 * 24 * 365 * 1e6)
 
 # --- Binning setup ---
 
@@ -142,29 +141,6 @@ class Paleodetector:
         self._nuclear_data_cache[filename] = np.loadtxt(filepath, usecols=cols_to_use, unpack=True)
         return self._nuclear_data_cache[filename]
     
-    def _load_depth_interpolators(self):
-        pen = []
-        width = []
-        pri_energies = np.logspace(-3, 3, 10)
-
-
-        for energy_name in pri_energies:
-
-            filepathm = f"Data/Geant4_data/StdRock_mu-/outNuclei_{energy_name:.6f}.txt"
-            energiesm, depthm, rem_energy = np.loadtxt(filepathm, usecols=(2, 3, 5), dtype = str, unpack=True)
-            energiesm = energiesm.astype(float)
-            depthm = 500 - depthm.astype(float)/1000.
-            rem_energy = rem_energy.astype(float)
-
-            pen.append(depthm[rem_energy == 0].mean())
-            width.append(depthm[rem_energy == 0].std())
-
-        maxdepth = interp1d(pri_energies[:-1], pen[:-1], kind='linear', fill_value='extrapolate', bounds_error=False)
-        meanwidth = interp1d(pri_energies[:-1], width[:-1], kind='linear', fill_value='extrapolate', bounds_error=False)
-    
-        self._depth_interpolators['maxdepth'] = lambda x : np.clip(maxdepth(x), 0.5e-3, np.inf)
-        self._depth_interpolators['meanwidth']= lambda x : np.clip(meanwidth(x), 1.e-4, np.inf)
-
     def _load_neutron_bkg(self):
         """
         Loads and caches the radiogenic neutron background spectrum from a file.
@@ -495,9 +471,12 @@ class Paleodetector:
             width.append(depth[rem_energy == 0].std()*2.65)
 
         self._depth_interpolators[species] = {}
-        self._depth_interpolators[species]['maxdepth'] = interp1d(pri_energies[1:-1], pen[1:-1], kind='linear', fill_value='extrapolate', bounds_error=False)
-        self._depth_interpolators[species]['meanwidth'] = interp1d(pri_energies[1:-1], width[1:-1], kind='linear', fill_value='extrapolate', bounds_error=False)
+        maxdepth = interp1d(pri_energies[:-1], pen[:-1], kind='linear', fill_value='extrapolate', bounds_error=False)
+        meanwidth = interp1d(pri_energies[:-1], width[:-1], kind='linear', fill_value='extrapolate', bounds_error=False)
     
+        self._depth_interpolators[species]['maxdepth'] = lambda x : np.clip(maxdepth(x), 0.5e-3, np.inf)
+        self._depth_interpolators[species]['meanwidth']= lambda x : np.clip(meanwidth(x), 1.e-4, np.inf)
+
     def _interpolate_flux_scenarios(self, scenario_config, species='mu-'):
         """
         Interpolates particle flux data for a given scenario configuration.
@@ -584,7 +563,7 @@ class Paleodetector:
         """
         
         depth_min = depth_mwe
-        depth_max = depth_mwe + target_thickness_mm * 0.001
+        depth_max = depth_mwe + target_thickness_mm * 0.001 * self.config['density_g_cm3']
 
         if not self._flux_interpolators[f'{scenario_name}_{species}']:
             raise ValueError(f"Flux interpolators not initialized for scenario {scenario_name} and species {species}.")
@@ -606,16 +585,15 @@ class Paleodetector:
 
         fragment_spectra = {frag: np.zeros(len(RECOIL_ENERGY_BINS_MEV) - 1) for frag in all_fragments}
     
-        for i, energy_name in enumerate(energy_bins_gev[:-1]):
-
+        for i in range(len(energy_bins_gev) - 1):
             e_min = energy_bins_gev[i]
             e_max = energy_bins_gev[i+1]
-            weight_elastic = quad(lambda e: quad(lambda x: np.clip(np.exp(-(x - maxdepth(e))/meanwidth(e)), 0. , 1.), depth_min, depth_max)[0]*flux_interpolator(e), e_min, e_max)[0]
+            weight_elastic = quad(lambda e: quad(lambda x: np.clip(np.exp(-(x - maxdepth(e))/meanwidth(e)), 0. , 1.) / (maxdepth(e)+meanwidth(e)), depth_min, depth_max)[0]*flux_interpolator(e), e_min, e_max)[0]
             
             if species == 'mu-':
-                weight_peak = quad(lambda e: quad(lambda x: norm.pdf(x, loc = maxdepth(e), scale = meanwidth(e))*(maxdepth(e) + meanwidth(e)), depth_min, depth_max)[0]*flux_interpolator(e), e_min, e_max)[0]
+                weight_peak = quad(lambda e: quad(lambda x: np.exp(-(x-maxdepth(e))**2/(2*meanwidth(e)**2))/(np.sqrt(2*np.pi)*meanwidth(e)), depth_min, depth_max)[0]*flux_interpolator(e), e_min, e_max)[0]
 
-            filepath = os.path.join(geant4_input_dir, f"outNuclei_{energy_name:.6f}.txt")
+            filepath = os.path.join(geant4_input_dir, f"outNuclei_{e_min:.6f}.txt")
             if not os.path.exists(filepath): continue
 
             names, rec_energies, rem_energies = np.loadtxt(filepath, usecols=(0, 2, 5), dtype=str, unpack=True)
@@ -637,7 +615,7 @@ class Paleodetector:
         output_filepath = os.path.join(output_dir, f"{self.name}_{species}_recoil_{scenario_name}_{t_kyr}kyr_{depth_mwe:.1f}mwe.npz")
 
         bin_widths_mev = np.diff(RECOIL_ENERGY_BINS_MEV)
-        norm_factor = (bin_widths_mev * 1e-2 * self.config['density_g_cm3'] * 1e-3 * total_simulated_particles)/ (SECONDS_PER_MYR * 1e-4)
+        norm_factor = (bin_widths_mev * target_thickness_mm * self.config['density_g_cm3'] * total_simulated_particles * MYR_PER_SECOND)
 
         normalized_spectra = {}
         for name, spectrum in all_recoil_spectra.items():
@@ -697,7 +675,7 @@ class Paleodetector:
         
         return dRdx_by_nucleus
 
-    def calculate_particle_signal_spectrum(self, x_bins, t_kyr, scenario_name, energy_bins_gev, depth_mwe, total_simulated_particles=1e5,  target_thickness_cm=1000, species='mu-', nucleus="total", time_precision=0):
+    def calculate_particle_signal_spectrum(self, x_bins, t_kyr, scenario_name, energy_bins_gev, depth_mwe, total_simulated_particles=1e5,  target_thickness_mm=5., species='mu-', nucleus="total", time_precision=0):
         """
         Calculates the final particle-induced differential track length spectrum (dR/dx) for a given depth.
 
@@ -706,7 +684,7 @@ class Paleodetector:
             t_kyr (float): The time in kiloyears for which to calculate the spectrum.
             scenario_name (str): The name of the flux scenario to use.
             energy_bins_gev (np.ndarray): The energy bin edges [GeV].
-            target_thickness_cm (float): Target thickness in the Geant4 simulation [cm].
+            target_thickness_mm (float): Target thickness in the Geant4 simulation [mm].
             depth_mwe (float): Shielding depth [m.w.e.].
             total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e5.
             nucleus (str, optional): Which nucleus/fragment spectrum to return ('total', 'all', or a specific symbol). Defaults to "total".
@@ -719,11 +697,9 @@ class Paleodetector:
         """
         t_kyr = round(t_kyr, time_precision)
 
-        self._load_depth_interpolators(species)
-
         filepath = os.path.join(self.data_path, "processed_recoils", f"{self.name}_{species}_recoil_{scenario_name}_{t_kyr}kyr_{depth_mwe:.1f}mwe.npz")
         if not os.path.exists(filepath):
-            self._process_geant4_data(t_kyr, scenario_name, energy_bins_gev, depth_mwe, total_simulated_particles, target_thickness_cm, species)
+            self._process_geant4_data(t_kyr, scenario_name, energy_bins_gev, depth_mwe, total_simulated_particles, target_thickness_mm, species)
 
         recoil_data = np.load(filepath)
         self._recoil_cache[f'{scenario_name}_{species}'] = recoil_data
@@ -749,18 +725,32 @@ class Paleodetector:
         """
         x_bins, t_kyr, scenario_name, energy_bins_gev, \
         initial_depth, deposition_rate_m_kyr, \
-        overburden_density_g_cm3, total_simulated_particles, target_thickness_cm, species = args
+        overburden_density_g_cm3, total_simulated_particles, target_thickness_mm, species = args
 
         depth_mwe = initial_depth + deposition_rate_m_kyr * t_kyr * overburden_density_g_cm3
 
         dRdx_at_depth = self.calculate_particle_signal_spectrum(
             x_bins, t_kyr, scenario_name, energy_bins_gev,
-            depth_mwe, total_simulated_particles, target_thickness_cm, species
+            depth_mwe, total_simulated_particles, target_thickness_mm, species
         )
 
         return dRdx_at_depth, t_kyr
 
-    def integrate_particle_signal_spectrum_parallel(self, x_bins, scenario_config, energy_bins_gev, exposure_window_kyr, sample_mass_kg, initial_depth=0, deposition_rate_m_kyr=0, overburden_density_g_cm3=1., nsteps=None, total_simulated_particles=1e5, target_thickness_cm=1000, x_grid=TRACK_LENGTH_BINS_NM, species='mu-'):
+    def integrate_particle_signal_spectrum_parallel(
+            self, 
+            x_bins, 
+            scenario_config, 
+            energy_bins_gev, 
+            exposure_window_kyr, 
+            sample_mass_kg, 
+            initial_depth=0, 
+            deposition_rate_m_kyr=0, 
+            overburden_density_g_cm3=1., 
+            nsteps=None, 
+            total_simulated_particles=1e5, 
+            target_thickness_mm=5., 
+            x_grid=TRACK_LENGTH_BINS_NM, 
+            species='mu-'):
         """
         Calculates the final particle-induced track length spectrum by parallelizing the time integration.
 
@@ -775,7 +765,7 @@ class Paleodetector:
             overburden_density_g_cm3 (float, optional): Overburden density in g/cm³. Defaults to 1.
             nsteps (int, optional): Number of time steps for integration. Defaults to 75*(number of flux changes in scenario_config).
             total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.        
-            target_thickness_cm (float, optional): Thickness of the target in the Geant4 simulation [cm]. Defaults to 1000.
+            target_thickness_mm (float, optional): Thickness of the target [mm]. Defaults to 5.
             x_grid (np.ndarray, optional): The bin edges for the internal track length spectrum [nm]. Defaults to TRACK_LENGTH_BINS_NM.
             species (str, optional): The particle species to simulate ('mu+', 'mu-', or 'neutron'). Defaults to 'mu-'.
             
@@ -796,7 +786,7 @@ class Paleodetector:
 
         tasks = [(x_grid, t_kyr, scenario_config["name"], energy_bins_gev, 
                    initial_depth, deposition_rate_m_kyr, 
-                  overburden_density_g_cm3, total_simulated_particles, target_thickness_cm, species)
+                  overburden_density_g_cm3, total_simulated_particles, target_thickness_mm, species)
                  for t_kyr in time_bins_kyr]
 
         with Pool() as pool:
