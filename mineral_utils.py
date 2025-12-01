@@ -159,9 +159,12 @@ class Paleodetector:
             pen.append(depthm[rem_energy == 0].mean())
             width.append(depthm[rem_energy == 0].std())
 
-        self._depth_interpolators['maxdepth'] = interp1d(pri_energies[:-1], pen[:-1], kind='linear', fill_value='extrapolate', bounds_error=False)
-        self._depth_interpolators['meanwidth'] = interp1d(pri_energies[:-1], width[:-1], kind='linear', fill_value='extrapolate', bounds_error=False)
+        maxdepth = interp1d(pri_energies[:-1], pen[:-1], kind='linear', fill_value='extrapolate', bounds_error=False)
+        meanwidth = interp1d(pri_energies[:-1], width[:-1], kind='linear', fill_value='extrapolate', bounds_error=False)
     
+        self._depth_interpolators['maxdepth'] = lambda x : np.clip(maxdepth(x), 0.5e-3, np.inf)
+        self._depth_interpolators['meanwidth']= lambda x : np.clip(meanwidth(x), 1.e-4, np.inf)
+
     def _load_neutron_bkg(self):
         """
         Loads and caches the radiogenic neutron background spectrum from a file.
