@@ -781,6 +781,7 @@ class Paleodetector:
         """
 
         self._interpolate_flux_scenarios(scenario_config, species)
+        self._load_depth_interpolators(species)
 
         if not nsteps:
             nsteps = 75 * len(scenario_config["event_fluxes"])
