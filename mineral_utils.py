@@ -1,7 +1,9 @@
 import numpy as np
+import pandas as pd
 import os
 from scipy.interpolate import interp1d, InterpolatedUnivariateSpline
 from scipy.integrate import quad
+from scipy.special import erf
 from mendeleev import element
 from tqdm import tqdm
 from multiprocessing import Pool
@@ -76,6 +78,120 @@ def _asymmetric_gaussian_kernel(size, sigma_left, sigma_right=None):
     
     return kernel / np.sum(kernel)
 
+def smear_spectrum(counts, size, sigma_left, sigma_right=None):
+    """
+    Applies asymmetric gaussian smearing to the track length distribution.
+
+    Args:
+        counts (np.ndarray): Track counts in the bins.
+        size (int): The total size (number of points) of the kernel. Must be odd.
+        sigma_left (float): The standard deviation for the left tail.
+        sigma_right (float, optional): The standard deviation for the right tail. If None, the kernel is a symmetric gaussian with sigma = sigma_left.
+
+    Returns:
+        np.ndarray: The smeared track counts.
+    """        
+    smeared_counts = np.convolve(counts, _asymmetric_gaussian_kernel(size, sigma_left, sigma_right), mode='same')
+
+    return smeared_counts
+
+def calibrate_spectrum(x_bins, counts, x_scale_factor=1.0, y_scale_factor=1.0):
+    """
+    Applies an absolute calibration shift to the x-axis (track length) and y-axis (counts) of a spectrum.
+
+    This function scales the track lengths by the given factor and then re-bins
+    the counts onto the original binning structure using linear interpolation.
+
+    Args:
+        x_bins (np.ndarray): The bin edges for track length spectrum [nm].
+        counts (np.ndarray): The array of track counts in each bin.
+        x_scale_factor (float): The multiplicative factor to apply to the x-axis.
+        y_scale_factor (float): The multiplicative factor to apply to the y-axis.
+
+    Returns:
+        np.ndarray: The calibrated track counts, re-binned onto the original
+                    x_bins structure.
+    """
+
+    x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
+
+    x_scaled = x_mids * x_scale_factor
+
+    calibrated_y = np.interp(x_mids, x_scaled, counts)
+    calibrated_y *= (np.sum(counts) / np.sum(calibrated_y))
+
+    return calibrated_y*y_scale_factor
+
+def slice_spectrum(x_bins, counts, angular_pdf=None, phi_cut_deg=0., l_min_measurable=300., l_max_measurable=50000., pit_width=500., bulk_etching_depth=100., f_phi= lambda phi: 1., n_samples=1e6, correction=True):
+    """
+    Applies Monte Carlo simulation of track slicing, accounting for geometrical, angular, 
+    and experimental filtering effects (min/max measurable length).
+
+    Args:
+        x_bins (np.ndarray): The bin edges for the true track length spectrum R [nm].
+        counts (np.ndarray): The array of true track counts N(R) in each bin.
+        angular_pdf (np.ndarray, optional): Normalized array P(phi) for the angle distribution 
+                                            of tracks relative to the surface normal. Defaults to isotropic (sin(phi)).
+        phi_cut_deg (float): Angular filter threshold (tracks with phi < phi_cut are rejected). 
+                                Set to 0.0 for highly-faithful plasma etching.
+        l_min_measurable (float): Minimum measurable segment length, L_min [nm]. Tracks shorter than 
+                                    this are lost due resolution limits.
+        l_max_measurable (float): Maximum measurable segment length, L_max [nm]. This caps 
+                                    the pit size due to saturation effects in the etching process.
+        pit_width (float): Typical width of the etched pit [nm]. 
+                            Tracks with parallel footprint smaller than this threshold will be measured by this.
+        bulk_etching_depth (float): Minimum vertical development of the track [nm]. 
+                                    Tracks shallower than this are lost due to etching away.
+        f_phi (callable): Function applied to the segment length L_seg * f_phi(phi). Corrects 
+                            for anisotropic enlargement (e.g., set to lambda phi: 1.0 for plasma etching).
+        n_samples (int): Number of Monte Carlo tracks to simulate for accurate statistics.
+        correction (bool): If True, applies pit_width correction. If not, the pit_width correction is ignored.
+
+    Returns:
+        np.ndarray: The resulting measured track count histogram N(L_meas), normalized to 
+                    the total input counts.
+    """
+    x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
+    phi_cut_rad = np.deg2rad(phi_cut_deg)
+
+    samples = np.random.choice(x_mids, size=int(n_samples), p=counts/np.sum(counts))
+    
+    phi_grid = np.linspace(0, np.pi / 2, 1000)
+
+    if not angular_pdf:
+        angular_pdf = np.sin(phi_grid)
+
+    sampled_angles = np.random.choice(phi_grid, size=int(n_samples), p=angular_pdf / np.sum(angular_pdf))
+
+    is_retained = sampled_angles >= phi_cut_rad
+
+    samples_retained = samples[is_retained]
+    phi_retained = sampled_angles[is_retained]
+
+    seg_samples = np.random.uniform(low=0., high=samples_retained)
+
+    measured_samples = seg_samples * f_phi(phi_retained)
+
+    is_retained_length = measured_samples >= l_min_measurable
+
+    measurable_samples = measured_samples[is_retained_length]
+    measurable_angles = phi_retained[is_retained_length]
+
+    is_retained_depth = measurable_samples * np.sin(measurable_angles) >= bulk_etching_depth
+
+    if correction:
+        corrected_measurable_samples = np.where(measurable_samples[is_retained_depth] * np.cos(measurable_angles[is_retained_depth]) >= pit_width/2., (pit_width/2.)+measurable_samples[is_retained_depth] * np.cos(measurable_angles[is_retained_depth]), pit_width)
+    else:
+        corrected_measurable_samples = measurable_samples[is_retained_depth]
+
+    final_measured_samples = np.minimum(corrected_measurable_samples, l_max_measurable)
+
+    hist_measured, _ = np.histogram(final_measured_samples, bins=x_bins, density=False)
+
+    hist_norm = hist_measured * (np.sum(counts) / n_samples)
+
+    return hist_norm
+
 # --- Main Paleodetector Class ---
 
 class Paleodetector:
@@ -103,7 +219,6 @@ class Paleodetector:
         self.composition = mineral_config['composition']
         self.data_path = data_path_prefix
         
-        # --- Caches to store loaded data for efficiency ---
         self._srim_cache = {}
         self._recoil_cache = {}
         self._nuclear_data_cache = {}
@@ -548,7 +663,7 @@ class Paleodetector:
                         all_fragments.add(name)
         return sorted(list(all_fragments))
 
-    def _process_geant4_data(self, t_kyr, scenario_name, energy_bins_gev, depth_mwe=0., total_simulated_particles=1e4, target_thickness_mm=5., species='mu-'):
+    def _process_geant4_data(self, t_kyr, scenario_name, energy_bins_gev, depth_mwe=0., total_simulated_particles=1e4, target_thickness_mm=1., species='mu-'):
         """
         Processes raw Geant4 data for a given scenario, creating a normalized recoil spectrum file.
 
@@ -561,9 +676,7 @@ class Paleodetector:
             total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.
             species (str, optional): The particle species to simulate ('mu+', 'mu-', or 'neutron'). Defaults to 'mu-'.
         """
-        
-        depth_min = depth_mwe
-        depth_max = depth_mwe + target_thickness_mm * 0.001 * self.config['density_g_cm3']
+
 
         if not self._flux_interpolators[f'{scenario_name}_{species}']:
             raise ValueError(f"Flux interpolators not initialized for scenario {scenario_name} and species {species}.")
@@ -588,26 +701,81 @@ class Paleodetector:
         for i in range(len(energy_bins_gev) - 1):
             e_min = energy_bins_gev[i]
             e_max = energy_bins_gev[i+1]
-            weight_elastic = quad(lambda e: quad(lambda x: np.clip(np.exp(-(x - maxdepth(e))/meanwidth(e)), 0. , 1.) / (maxdepth(e)+meanwidth(e)), depth_min, depth_max)[0]*flux_interpolator(e), e_min, e_max)[0]
-            
+
+            N_E = 50
+            N_C = 50 
+            e_vals = np.linspace(e_min, e_max, N_E)
+            c_vals = np.linspace(0.01, 1.0, N_C)
+
+            E_grid, C_grid = np.meshgrid(e_vals, c_vals)
+
+            flux_grid = flux_interpolator(E_grid)
+            D_grid = maxdepth(E_grid)
+            W_grid = meanwidth(E_grid)
+
+            z_min_grid = depth_mwe / C_grid
+            target_thickness_mwe = target_thickness_mm * 0.001 * self.config['density_g_cm3']
+            z_max_grid = z_min_grid + target_thickness_mwe / C_grid
+
+            effective_min = np.maximum(z_min_grid, D_grid)
+            top_A = np.minimum(z_max_grid, D_grid)
+            val_A = np.maximum(0.0, top_A - z_min_grid)
+
+            mask = z_max_grid > effective_min
+            val_B = np.zeros_like(z_max_grid)
+
+            val_B[mask] = W_grid[mask] * (np.exp(-(effective_min[mask] - D_grid[mask])/W_grid[mask]) - np.exp(-(z_max_grid[mask] - D_grid[mask])/W_grid[mask]))
+
+            prob_tail_grid = (val_A + val_B) / (D_grid + W_grid)
+            integrand_tail = flux_grid * prob_tail_grid
+
+            weight_elastic = np.trapz(np.trapz(integrand_tail, e_vals, axis=1), c_vals)
+
             if species == 'mu-':
-                weight_peak = quad(lambda e: quad(lambda x: np.exp(-(x-maxdepth(e))**2/(2*meanwidth(e)**2))/(np.sqrt(2*np.pi)*meanwidth(e)), depth_min, depth_max)[0]*flux_interpolator(e), e_min, e_max)[0]
+                prob_peak_grid = 0.5 * (erf((z_max_grid - D_grid) / (np.sqrt(2) * W_grid)) - erf((z_min_grid - D_grid) / (np.sqrt(2) * W_grid)))
+                integrand_peak = flux_grid * prob_peak_grid
+
+                weight_peak = np.trapz(np.trapz(integrand_peak, e_vals, axis=1), c_vals)
 
             filepath = os.path.join(geant4_input_dir, f"outNuclei_{e_min:.6f}.txt")
             if not os.path.exists(filepath): continue
 
-            names, rec_energies, rem_energies = np.loadtxt(filepath, usecols=(0, 2, 5), dtype=str, unpack=True)
-            rec_energies = rec_energies.astype(float)
-            rem_energies = rem_energies.astype(float)
+            try:
+                df = pd.read_csv(filepath, sep='\s+', header=None, usecols=[0, 2, 5], 
+                                names=['name', 'rec_e', 'rem_e'], dtype={'name': str, 'rec_e': float, 'rem_e': float})
+                names = df['name'].values
+                rec_energies = df['rec_e'].values
+                rem_energies = df['rem_e'].values
+            except pd.errors.EmptyDataError:
+                continue
 
-            for name, rec_energy, rem_energy in zip(names, rec_energies, rem_energies):
-                if name in fragment_spectra:
-                    bin_index = np.digitize(rec_energy, RECOIL_ENERGY_BINS_MEV) - 1
-                    if 0 <= bin_index < len(fragment_spectra[name]):
-                        if rem_energy == 0.0 and species == 'mu-':
-                            fragment_spectra[name][bin_index] += weight_peak
-                        else:
-                            fragment_spectra[name][bin_index] += weight_elastic
+            valid_mask = np.isin(names, list(fragment_spectra.keys()))
+            valid_names = names[valid_mask]
+            valid_rec = rec_energies[valid_mask]
+            valid_rem = rem_energies[valid_mask]
+
+            unique_frags = np.unique(valid_names)
+
+            for frag in unique_frags:
+                frag_mask = (valid_names == frag)
+                frag_rec_energies = valid_rec[frag_mask]
+                frag_rem_energies = valid_rem[frag_mask]
+
+                if species == 'mu-':
+                    mask_peak = (frag_rem_energies == 0.0)
+                    rec_peak = frag_rec_energies[mask_peak]
+                    rec_elastic = frag_rec_energies[~mask_peak]
+                    
+                    if len(rec_peak) > 0:
+                        counts_peak, _ = np.histogram(rec_peak, bins=RECOIL_ENERGY_BINS_MEV)
+                        fragment_spectra[frag] += counts_peak * weight_peak
+                        
+                    if len(rec_elastic) > 0:
+                        counts_elastic, _ = np.histogram(rec_elastic, bins=RECOIL_ENERGY_BINS_MEV)
+                        fragment_spectra[frag] += counts_elastic * weight_elastic
+                else:
+                    counts, _ = np.histogram(frag_rec_energies, bins=RECOIL_ENERGY_BINS_MEV)
+                    fragment_spectra[frag] += counts * weight_elastic
         all_recoil_spectra.update(fragment_spectra)
 
         output_dir = os.path.join(self.data_path, "processed_recoils")
@@ -804,122 +972,8 @@ class Paleodetector:
 
         total_drdx = [quad(drdx_interpolator, 0, exposure_window_kyr)[0] for drdx_interpolator in drdx_interpolators]
 
-        total_tracks_interp  = interp1d(x_mids_grid, np.array(total_drdx) * sample_mass_kg * 1e-3 * np.pi,  bounds_error=False, fill_value='extrapolate')
+        total_tracks_interp  = interp1d(x_mids_grid, np.array(total_drdx) * sample_mass_kg * 1e-3,  bounds_error=False, fill_value='extrapolate')
 
         total_tracks = [quad(total_tracks_interp, x_bins[i], x_bins[i+1])[0] for i in range(len(x_mids))]
 
         return total_tracks
-    
-def smear_spectrum(counts, size, sigma_left, sigma_right=None):
-    """
-    Applies asymmetric gaussian smearing to the track length distribution.
-
-    Args:
-        counts (np.ndarray): Track counts in the bins.
-        size (int): The total size (number of points) of the kernel. Must be odd.
-        sigma_left (float): The standard deviation for the left tail.
-        sigma_right (float, optional): The standard deviation for the right tail. If None, the kernel is a symmetric gaussian with sigma = sigma_left.
-
-    Returns:
-        np.ndarray: The smeared track counts.
-    """        
-    smeared_counts = np.convolve(counts, _asymmetric_gaussian_kernel(size, sigma_left, sigma_right), mode='same')
-
-    return smeared_counts
-
-def calibrate_spectrum(x_bins, counts, x_scale_factor=1.0, y_scale_factor=1.0):
-    """
-    Applies an absolute calibration shift to the x-axis (track length) and y-axis (counts) of a spectrum.
-
-    This function scales the track lengths by the given factor and then re-bins
-    the counts onto the original binning structure using linear interpolation.
-
-    Args:
-        x_bins (np.ndarray): The bin edges for track length spectrum [nm].
-        counts (np.ndarray): The array of track counts in each bin.
-        x_scale_factor (float): The multiplicative factor to apply to the x-axis.
-        y_scale_factor (float): The multiplicative factor to apply to the y-axis.
-
-    Returns:
-        np.ndarray: The calibrated track counts, re-binned onto the original
-                    x_bins structure.
-    """
-
-    x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
-
-    x_scaled = x_mids * x_scale_factor
-
-    calibrated_y = np.interp(x_mids, x_scaled, counts)
-    calibrated_y *= (np.sum(counts) / np.sum(calibrated_y))
-
-    return calibrated_y*y_scale_factor
-
-def slice_spectrum(x_bins, counts, angular_pdf=None, phi_cut_deg=0., l_min_measurable=300., l_max_measurable=50000., pit_width=500., bulk_etching_depth=100., f_phi= lambda phi: 1., n_samples=1e6, correction=True):
-    """
-    Applies Monte Carlo simulation of track slicing, accounting for geometrical, angular, 
-    and experimental filtering effects (min/max measurable length).
-
-    Args:
-        x_bins (np.ndarray): The bin edges for the true track length spectrum R [nm].
-        counts (np.ndarray): The array of true track counts N(R) in each bin.
-        angular_pdf (np.ndarray, optional): Normalized array P(phi) for the angle distribution 
-                                            of tracks relative to the surface normal. Defaults to isotropic (sin(phi)).
-        phi_cut_deg (float): Angular filter threshold (tracks with phi < phi_cut are rejected). 
-                                Set to 0.0 for highly-faithful plasma etching.
-        l_min_measurable (float): Minimum measurable segment length, L_min [nm]. Tracks shorter than 
-                                    this are lost due resolution limits.
-        l_max_measurable (float): Maximum measurable segment length, L_max [nm]. This caps 
-                                    the pit size due to saturation effects in the etching process.
-        pit_width (float): Typical width of the etched pit [nm]. 
-                            Tracks with parallel footprint smaller than this threshold will be measured by this.
-        bulk_etching_depth (float): Minimum vertical development of the track [nm]. 
-                                    Tracks shallower than this are lost due to etching away.
-        f_phi (callable): Function applied to the segment length L_seg * f_phi(phi). Corrects 
-                            for anisotropic enlargement (e.g., set to lambda phi: 1.0 for plasma etching).
-        n_samples (int): Number of Monte Carlo tracks to simulate for accurate statistics.
-        correction (bool): If True, applies pit_width correction. If not, the pit_width correction is ignored.
-
-    Returns:
-        np.ndarray: The resulting measured track count histogram N(L_meas), normalized to 
-                    the total input counts.
-    """
-    x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
-    phi_cut_rad = np.deg2rad(phi_cut_deg)
-
-    samples = np.random.choice(x_mids, size=int(n_samples), p=counts/np.sum(counts))
-    
-    phi_grid = np.linspace(0, np.pi / 2, 1000)
-
-    if not angular_pdf:
-        angular_pdf = np.sin(phi_grid)
-
-    sampled_angles = np.random.choice(phi_grid, size=int(n_samples), p=angular_pdf / np.sum(angular_pdf))
-
-    is_retained = sampled_angles >= phi_cut_rad
-
-    samples_retained = samples[is_retained]
-    phi_retained = sampled_angles[is_retained]
-
-    seg_samples = np.random.uniform(low=0., high=samples_retained)
-
-    measured_samples = seg_samples * f_phi(phi_retained)
-
-    is_retained_length = measured_samples >= l_min_measurable
-
-    measurable_samples = measured_samples[is_retained_length]
-    measurable_angles = phi_retained[is_retained_length]
-
-    is_retained_depth = measurable_samples * np.sin(measurable_angles) >= bulk_etching_depth
-
-    if correction:
-        corrected_measurable_samples = np.where(measurable_samples[is_retained_depth] * np.cos(measurable_angles[is_retained_depth]) >= pit_width/2., (pit_width/2.)+measurable_samples[is_retained_depth] * np.cos(measurable_angles[is_retained_depth]), pit_width)
-    else:
-        corrected_measurable_samples = measurable_samples[is_retained_depth]
-
-    final_measured_samples = np.minimum(corrected_measurable_samples, l_max_measurable)
-
-    hist_measured, _ = np.histogram(final_measured_samples, bins=x_bins, density=False)
-
-    hist_norm = hist_measured * (np.sum(counts) / n_samples)
-
-    return hist_norm
