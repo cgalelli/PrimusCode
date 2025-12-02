@@ -586,11 +586,19 @@ class Paleodetector:
             width.append(depth[rem_energy == 0].std()*2.65)
 
         self._depth_interpolators[species] = {}
-        maxdepth = interp1d(pri_energies[:-1], pen[:-1], kind='linear', fill_value='extrapolate', bounds_error=False)
-        meanwidth = interp1d(pri_energies[:-1], width[:-1], kind='linear', fill_value='extrapolate', bounds_error=False)
-    
-        self._depth_interpolators[species]['maxdepth'] = lambda x : np.clip(maxdepth(x), 0.5e-3, np.inf)
-        self._depth_interpolators[species]['meanwidth']= lambda x : np.clip(meanwidth(x), 1.e-4, np.inf)
+        self._maxdepth_interp = interp1d(pri_energies[:-1], pen[:-1], kind='linear', fill_value='extrapolate', bounds_error=False)
+        self._meanwidth_interp = interp1d(pri_energies[:-1], width[:-1], kind='linear', fill_value='extrapolate', bounds_error=False)
+
+        self._depth_interpolators[species]['maxdepth'] = self._clipped_maxdepth
+        self._depth_interpolators[species]['meanwidth'] = self._clipped_meanwidth
+
+    def _clipped_maxdepth(self, x):
+        """Clipped maximum penetration depth (pickleable instance method)."""
+        return np.clip(self._maxdepth_interp(x), 0.5e-3, np.inf)
+
+    def _clipped_meanwidth(self, x):
+        """Clipped mean width (pickleable instance method)."""
+        return np.clip(self._meanwidth_interp(x), 1.e-4, np.inf)
 
     def _interpolate_flux_scenarios(self, scenario_config, species='mu-'):
         """
@@ -741,7 +749,7 @@ class Paleodetector:
             if not os.path.exists(filepath): continue
 
             try:
-                df = pd.read_csv(filepath, sep='\s+', header=None, usecols=[0, 2, 5], 
+                df = pd.read_csv(filepath, sep=r'\s+', header=None, usecols=[0, 2, 5], 
                                 names=['name', 'rec_e', 'rem_e'], dtype={'name': str, 'rec_e': float, 'rem_e': float})
                 names = df['name'].values
                 rec_energies = df['rec_e'].values
