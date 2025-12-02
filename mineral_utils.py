@@ -671,9 +671,9 @@ class Paleodetector:
             t_kyr (float): The time in kiloyears for which to process the data.
             scenario_name (str): The name of the flux scenario to use.
             energy_bins_gev (np.ndarray): The energy bin edges [GeV].
-            target_thickness_mm (float): The thickness of the target in the Geant4 simulation [mm].
             depth_mwe (float, optional): Shielding depth [m.w.e.]. Defaults to 0.
             total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.
+            target_thickness_mm (float): The thickness of the target [mm].
             species (str, optional): The particle species to simulate ('mu+', 'mu-', or 'neutron'). Defaults to 'mu-'.
         """
 
@@ -843,7 +843,7 @@ class Paleodetector:
         
         return dRdx_by_nucleus
 
-    def calculate_particle_signal_spectrum(self, x_bins, t_kyr, scenario_name, energy_bins_gev, depth_mwe, total_simulated_particles=1e5,  target_thickness_mm=5., species='mu-', nucleus="total", time_precision=0):
+    def calculate_particle_signal_spectrum(self, x_bins, t_kyr, scenario_name, energy_bins_gev, depth_mwe, total_simulated_particles=1e5,  target_thickness_mm=1., species='mu-', nucleus="total", time_precision=0):
         """
         Calculates the final particle-induced differential track length spectrum (dR/dx) for a given depth.
 
@@ -852,14 +852,14 @@ class Paleodetector:
             t_kyr (float): The time in kiloyears for which to calculate the spectrum.
             scenario_name (str): The name of the flux scenario to use.
             energy_bins_gev (np.ndarray): The energy bin edges [GeV].
-            target_thickness_mm (float): Target thickness in the Geant4 simulation [mm].
+            target_thickness_mm (float): Target thickness [mm].
             depth_mwe (float): Shielding depth [m.w.e.].
             total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e5.
+            target_thickness_mm (float): Target thickness [mm].
+            species (str, optional): The particle species to simulate ('mu+', 'mu-', or 'neutron'). Defaults to 'mu-'.
             nucleus (str, optional): Which nucleus/fragment spectrum to return ('total', 'all', or a specific symbol). Defaults to "total".
             time_precision (int, optional): Decimal precision for time-based filenames. Defaults to 0 (O(kyr)).
-            species (str, optional): The particle species to simulate ('mu+', 'mu-', or 'neutron'). Defaults to 'mu-'.
-
-            
+    
         Returns:
             np.ndarray or dict: The differential track rate(s) (dR/dx) [events/kg/Myr/nm].
         """
@@ -916,7 +916,7 @@ class Paleodetector:
             overburden_density_g_cm3=1., 
             nsteps=None, 
             total_simulated_particles=1e5, 
-            target_thickness_mm=5., 
+            target_thickness_mm=1., 
             x_grid=TRACK_LENGTH_BINS_NM, 
             species='mu-'):
         """
@@ -933,7 +933,7 @@ class Paleodetector:
             overburden_density_g_cm3 (float, optional): Overburden density in g/cm³. Defaults to 1.
             nsteps (int, optional): Number of time steps for integration. Defaults to 75*(number of flux changes in scenario_config).
             total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.        
-            target_thickness_mm (float, optional): Thickness of the target [mm]. Defaults to 5.
+            target_thickness_mm (float, optional): Thickness of the target [mm]. Defaults to 1.
             x_grid (np.ndarray, optional): The bin edges for the internal track length spectrum [nm]. Defaults to TRACK_LENGTH_BINS_NM.
             species (str, optional): The particle species to simulate ('mu+', 'mu-', or 'neutron'). Defaults to 'mu-'.
             
