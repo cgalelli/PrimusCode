@@ -913,77 +913,70 @@ class Paleodetector:
         return dRdx_at_depth, t_kyr
 
     def integrate_particle_signal_spectrum_parallel(
-            self, 
-            x_bins, 
-            scenario_config, 
-            energy_bins_gev, 
-            exposure_window_kyr, 
-            sample_mass_kg, 
-            initial_depth=0, 
-            deposition_rate_m_kyr=0, 
-            overburden_density_g_cm3=1., 
-            nsteps=None, 
-            total_simulated_particles=1e5, 
-            target_thickness_mm=1., 
-            x_grid=TRACK_LENGTH_BINS_NM, 
-            species='mu-'):
-        """
-        Calculates the final particle-induced track length spectrum by parallelizing the time integration.
+                self, 
+                x_bins, 
+                scenario_config, 
+                energy_bins_gev, 
+                exposure_window_kyr, 
+                sample_mass_kg, 
+                initial_depth=0, 
+                deposition_rate_m_kyr=0, 
+                overburden_density_g_cm3=1., 
+                nsteps=None, 
+                total_simulated_particles=1e5, 
+                target_thickness_mm=1., 
+                x_grid=TRACK_LENGTH_BINS_NM, 
+                species='mu-'):
+            """
+            Calculates the final particle-induced track length spectrum by parallelizing the time integration.
 
-        Args:
-            x_bins (np.ndarray): The bin edges for the output track length spectrum [nm].
-            scenario_config (dict): Configuration dictionary for the flux scenario.
-            energy_bins_gev (np.ndarray): The energy bin edges [GeV].
-            exposure_window_kyr (float): The total exposure time in kiloyears.
-            sample_mass_kg (float): The mass of the sample in kilograms.
-            initial_depth (float, optional): Initial depth in meters water equivalent [m.w.e.]. Defaults to 0.
-            deposition_rate_m_kyr (float, optional): Deposition rate in meters per kiloyear. Defaults to 0.
-            overburden_density_g_cm3 (float, optional): Overburden density in g/cm³. Defaults to 1.
-            nsteps (int, optional): Number of time steps for integration. Defaults to 75*(number of flux changes in scenario_config).
-            total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.        
-            target_thickness_mm (float, optional): Thickness of the target [mm]. Defaults to 1.
-            x_grid (np.ndarray, optional): The bin edges for the internal track length spectrum [nm]. Defaults to TRACK_LENGTH_BINS_NM.
-            species (str, optional): The particle species to simulate ('mu+', 'mu-', or 'neutron'). Defaults to 'mu-'.
+            Args:
+                x_bins (np.ndarray): The bin edges for the output track length spectrum [nm].
+                scenario_config (dict): Configuration dictionary for the flux scenario.
+                energy_bins_gev (np.ndarray): The energy bin edges [GeV].
+                exposure_window_kyr (float): The total exposure time in kiloyears.
+                sample_mass_kg (float): The mass of the sample in kilograms.
+                initial_depth (float, optional): Initial depth in meters water equivalent [m.w.e.]. Defaults to 0.
+                deposition_rate_m_kyr (float, optional): Deposition rate in meters per kiloyear. Defaults to 0.
+                overburden_density_g_cm3 (float, optional): Overburden density in g/cm³. Defaults to 1.
+                nsteps (int, optional): Number of time steps for integration. Defaults to 75*(number of flux changes in scenario_config).
+                total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.        
+                target_thickness_mm (float, optional): Thickness of the target [mm]. Defaults to 1.
+                x_grid (np.ndarray, optional): The bin edges for the internal track length spectrum [nm]. Defaults to TRACK_LENGTH_BINS_NM.
+                species (str, optional): The particle species to simulate ('mu+', 'mu-', or 'neutron'). Defaults to 'mu-'.
+                
+            Returns:
+                np.ndarray: The total number of tracks expected in each track length bin.
+            """
+
+            self._interpolate_flux_scenarios(scenario_config, species)
+            self._load_depth_interpolators(species)
+
+            print(f"Integrating the signal in a {target_thickness_mm} mm slice of {self.name} with mass {sample_mass_kg*1e3} g, corresponding to {sample_mass_kg*1e3/(target_thickness_mm*0.1*self.config['density_g_cm3'])} cm2")
+
+            if not nsteps:
+                nsteps = len(scenario_config["event_fluxes"]) * 75 
+
+            time_bins_kyr = np.linspace(0., exposure_window_kyr, nsteps + 1)
+
+            tasks = [(x_grid, t_kyr, scenario_config["name"], energy_bins_gev, 
+                    initial_depth, deposition_rate_m_kyr, 
+                    overburden_density_g_cm3, total_simulated_particles, target_thickness_mm, species)
+                    for t_kyr in time_bins_kyr]
+
+            with Pool() as pool:
+                results = list(tqdm(pool.imap(self._integration_worker, tasks), total=len(tasks)))
             
-        Returns:
-            np.ndarray: The total number of tracks expected in each track length bin.
-        """
+            drdx_array, t_kyr = zip(*results)
+            total_drdx = np.trapz(drdx_array, t_kyr, axis=0)
+            
+            spectrum_density = total_drdx * sample_mass_kg * 1e-3
+            
+            internal_bin_widths = np.diff(x_grid)
+            cumulative_counts = np.concatenate(([0], np.cumsum(spectrum_density * internal_bin_widths)))
+            
+            cdf_interp = interp1d(x_grid, cumulative_counts, kind='linear', bounds_error=False, fill_value=(0, cumulative_counts[-1]))
+            
+            total_tracks = cdf_interp(x_bins[1:]) - cdf_interp(x_bins[:-1])
 
-        self._interpolate_flux_scenarios(scenario_config, species)
-        self._load_depth_interpolators(species)
-
-        print(f"Integrating the signal in a {target_thickness_mm} mm slice of {self.name} with mass {sample_mass_kg*1e3} g, corresponding to {sample_mass_kg*1e3/(target_thickness_mm*0.1*self.config['density_g_cm3'])} cm2")
-
-        if not nsteps:
-            nsteps = len(scenario_config["event_fluxes"])
-
-        time_bins_kyr = np.linspace(0., exposure_window_kyr, nsteps + 1)
-
-        x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
-        x_mids_grid = x_grid[:-1] + np.diff(x_grid) / 2.0
-
-        tasks = [(x_grid, t_kyr, scenario_config["name"], energy_bins_gev, 
-                   initial_depth, deposition_rate_m_kyr, 
-                  overburden_density_g_cm3, total_simulated_particles, target_thickness_mm, species)
-                 for t_kyr in time_bins_kyr]
-
-        with Pool() as pool:
-            results = list(tqdm(pool.imap(self._integration_worker, tasks), total=len(tasks)))
-        
-        drdx_array, t_kyr = zip(*results)
-
-        drdx_array = np.array(drdx_array)
-        if len(time_bins_kyr) == 1:
-            kind = "nearest"
-        else:
-            kind = "linear"
-
-        drdx_interpolators = [interp1d(t_kyr, drdx, bounds_error=False, fill_value=0.0, kind=kind) for drdx in drdx_array.T]
-
-        total_drdx = [quad(drdx_interpolator, 0, exposure_window_kyr)[0] for drdx_interpolator in drdx_interpolators]
-
-        total_tracks_interp  = interp1d(x_mids_grid, np.array(total_drdx) * sample_mass_kg * 1e-3,  bounds_error=False, fill_value='extrapolate')
-
-        total_tracks = [quad(total_tracks_interp, x_bins[i], x_bins[i+1])[0] for i in range(len(x_mids))]
-
-        return total_tracks
+            return total_tracks
