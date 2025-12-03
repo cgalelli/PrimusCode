@@ -426,7 +426,7 @@ class Paleodetector:
         x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
         x_mids_grid = x_grid[:-1] + np.diff(x_grid) / 2.0
 
-        drdx = self.calculate_neutron_spectrum(x_grid) * age * sample_mass
+        drdx = self.calculate_neutron_spectrum(x_grid) * age * sample_mass * 1e-3
 
         total_tracks_interp  = interp1d(x_mids_grid, np.array(drdx),  bounds_error=False, fill_value='extrapolate')
 
@@ -479,7 +479,7 @@ class Paleodetector:
         x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
         x_mids_grid = x_grid[:-1] + np.diff(x_grid) / 2.0
 
-        drdx = self.calculate_nu_spectrum(x_grid, flux_name) * age * sample_mass
+        drdx = self.calculate_nu_spectrum(x_grid, flux_name) * age * sample_mass * 1e-3
 
         total_tracks_interp  = interp1d(x_mids_grid, np.array(drdx),  bounds_error=False, fill_value='extrapolate')
 
@@ -548,7 +548,7 @@ class Paleodetector:
         x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
         x_mids_grid = x_grid[:-1] + np.diff(x_grid) / 2.0
 
-        drdx = self.calculate_fission_spectrum(x_grid) * age * sample_mass
+        drdx = self.calculate_fission_spectrum(x_grid) * age * sample_mass * 1e-3
 
         total_tracks_interp  = interp1d(x_mids_grid, np.array(drdx),  bounds_error=False, fill_value='extrapolate')
 
