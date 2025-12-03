@@ -1,7 +1,6 @@
 Data/processed_recoils/*
 Plots/*
 Data/images/*
-Data/inference_results/*.csv
 .ipynb_checkpoints
 _pycache_/
 *.pyc
