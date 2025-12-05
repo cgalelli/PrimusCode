@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import os
-from scipy.interpolate import interp1d, InterpolatedUnivariateSpline # type: ignore
+from scipy.interpolate import interp1d, InterpolatedUnivariateSpline
 from scipy.integrate import quad
 from scipy.special import erf
 from mendeleev import element
