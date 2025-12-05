@@ -956,7 +956,7 @@ class Paleodetector:
             print(f"Integrating the signal in a {target_thickness_mm} mm slice of {self.name} with mass {sample_mass_kg*1e3} g, corresponding to {sample_mass_kg*1e3/(target_thickness_mm*0.1*self.config['density_g_cm3'])} cm2")
 
             if not nsteps:
-                nsteps = len(scenario_config["event_fluxes"]) + int(deposition_rate_m_kyr*exposure_window_kyr/2.)
+                nsteps = len(scenario_config["event_fluxes"]) + int(deposition_rate_m_kyr*exposure_window_kyr/5.)
 
             time_bins_kyr = np.linspace(0., exposure_window_kyr, nsteps + 1)
 
