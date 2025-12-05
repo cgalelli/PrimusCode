@@ -671,7 +671,7 @@ class Paleodetector:
                         all_fragments.add(name)
         return sorted(list(all_fragments))
 
-    def _process_geant4_data(self, t_kyr, scenario_name, energy_bins_gev, depth_mwe=0., total_simulated_particles=1e4, target_thickness_mm=1., species='mu-'):
+    def _process_geant4_data(self, t_kyr, scenario_name, energy_bins_gev, depth_mwe=0., total_simulated_particles=1e4, target_thickness_mm=0.01, species='mu-'):
         """
         Processes raw Geant4 data for a given scenario, creating a normalized recoil spectrum file.
 
@@ -851,7 +851,7 @@ class Paleodetector:
         
         return dRdx_by_nucleus
 
-    def calculate_particle_signal_spectrum(self, x_bins, t_kyr, scenario_name, energy_bins_gev, depth_mwe, total_simulated_particles=1e5,  target_thickness_mm=1., species='mu-', nucleus="total", time_precision=0):
+    def calculate_particle_signal_spectrum(self, x_bins, t_kyr, scenario_name, energy_bins_gev, depth_mwe, total_simulated_particles=1e5,  target_thickness_mm=0.01, species='mu-', nucleus="total", time_precision=0):
         """
         Calculates the final particle-induced differential track length spectrum (dR/dx) for a given depth.
 
@@ -924,7 +924,7 @@ class Paleodetector:
                 overburden_density_g_cm3=1., 
                 nsteps=None, 
                 total_simulated_particles=1e5, 
-                target_thickness_mm=1., 
+                target_thickness_mm=0.01, 
                 x_grid=TRACK_LENGTH_BINS_NM, 
                 species='mu-'):
             """
