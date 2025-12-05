@@ -664,12 +664,12 @@ class Paleodetector:
         
         for energy_name in energy_names_gev:
             filepath = os.path.join(geant4_input_dir, f"outNuclei_{energy_name:.6f}.txt")
-            if os.path.exists(filepath):
-                names = np.loadtxt(filepath, usecols=0, dtype=str)
-                if len(names>0.):
-                    for name in names:
-                        if name not in ['He3', 'He4', 'He5', 'He6', 'He7', 'He8', 'alpha', 'proton', 'neutron']:
-                            all_fragments.add(name)
+            if os.path.getsize(filepath) > 0:
+                names = np.loadtxt(filepath, usecols=0, dtype=str, ndmin=1)
+
+                for name in names:
+                    if name not in ['He3', 'He4', 'He5', 'He6', 'He7', 'He8', 'alpha', 'proton', 'neutron']:
+                        all_fragments.add(name)
         return sorted(list(all_fragments))
 
     def _process_geant4_data(self, t_kyr, scenario_name, energy_bins_gev, depth_mwe=0., total_simulated_particles=1e4, target_thickness_mm=0.01, species='mu-'):
@@ -956,7 +956,7 @@ class Paleodetector:
             print(f"Integrating the signal in a {target_thickness_mm} mm slice of {self.name} with mass {sample_mass_kg*1e3} g, corresponding to {sample_mass_kg*1e3/(target_thickness_mm*0.1*self.config['density_g_cm3'])} cm2")
 
             if not nsteps:
-                nsteps = int(np.maximum((len(scenario_config["event_fluxes"]) - 1) , (deposition_rate_m_kyr * exposure_window_kyr) / (deposition_rate_m_kyr + 1)))
+                nsteps = len(scenario_config["event_fluxes"]) + int(deposition_rate_m_kyr*exposure_window_kyr/2.)
 
             time_bins_kyr = np.linspace(0., exposure_window_kyr, nsteps + 1)
 
