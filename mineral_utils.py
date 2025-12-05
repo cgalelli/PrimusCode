@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import os
-from scipy.interpolate import interp1d, InterpolatedUnivariateSpline
+from scipy.interpolate import interp1d, InterpolatedUnivariateSpline # type: ignore
 from scipy.integrate import quad
 from scipy.special import erf
 from mendeleev import element
@@ -738,13 +738,13 @@ class Paleodetector:
             prob_tail_grid = (val_A + val_B) / (D_grid + W_grid)
             integrand_tail = flux_grid * prob_tail_grid
 
-            weight_elastic = np.trapz(np.trapz(integrand_tail, e_vals, axis=1), c_vals)
+            weight_elastic = np.trapezoid(np.trapezoid(integrand_tail, e_vals, axis=1), c_vals)
 
             if species == 'mu-':
                 prob_peak_grid = 0.5 * (erf((z_max_grid - D_grid) / (np.sqrt(2) * W_grid)) - erf((z_min_grid - D_grid) / (np.sqrt(2) * W_grid)))
                 integrand_peak = flux_grid * prob_peak_grid
 
-                weight_peak = np.trapz(np.trapz(integrand_peak, e_vals, axis=1), c_vals)
+                weight_peak = np.trapezoid(np.trapezoid(integrand_peak, e_vals, axis=1), c_vals)
 
             filepath = os.path.join(geant4_input_dir, f"outNuclei_{e_min:.6f}.txt")
             if not os.path.exists(filepath): continue
@@ -969,7 +969,7 @@ class Paleodetector:
                 results = list(tqdm(pool.imap(self._integration_worker, tasks), total=len(tasks)))
             
             drdx_array, t_kyr = zip(*results)
-            total_drdx = np.trapz(drdx_array, t_kyr, axis=0)
+            total_drdx = np.trapezoid(drdx_array, t_kyr, axis=0)
             
             spectrum_density = total_drdx * sample_mass_kg * 1e-3
             
