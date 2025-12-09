@@ -955,15 +955,17 @@ class Paleodetector:
 
             print(f"Integrating the signal in a {target_thickness_mm} mm slice of {self.name} with mass {sample_mass_kg*1e3} g, corresponding to {sample_mass_kg*1e3/(target_thickness_mm*0.1*self.config['density_g_cm3'])} cm2")
 
-            if not steps:
-                steps = len(scenario_config["event_fluxes"]) + int(deposition_rate_m_kyr*exposure_window_kyr/5.)
-            elif isinstance(steps, float):
-                steps = np.linspace(0., exposure_window_kyr, steps + 1)
-
+            if isinstance(steps, np.array):
+                t_kyr_array = steps
+            else:
+                if not steps:
+                    steps = len(scenario_config["event_fluxes"]) + int(deposition_rate_m_kyr*exposure_window_kyr/5.)
+                t_kyr_array = np.linspace(0., exposure_window_kyr, steps + 1)
+    
             tasks = [(x_grid, t_kyr, scenario_config["name"], energy_bins_gev, 
                     initial_depth, deposition_rate_m_kyr, 
                     overburden_density_g_cm3, total_simulated_particles, target_thickness_mm, species)
-                    for t_kyr in steps]
+                    for t_kyr in t_kyr_array]
 
             with Pool() as pool:
                 results = list(tqdm(pool.imap(self._integration_worker, tasks), total=len(tasks)))
