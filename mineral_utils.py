@@ -923,7 +923,7 @@ class Paleodetector:
                 initial_depth=0, 
                 deposition_rate_m_kyr=0, 
                 overburden_density_g_cm3=1., 
-                nsteps=None, 
+                steps=None, 
                 total_simulated_particles=1e5, 
                 target_thickness_mm=0.01, 
                 x_grid=TRACK_LENGTH_BINS_NM, 
@@ -940,7 +940,7 @@ class Paleodetector:
                 initial_depth (float, optional): Initial depth in meters water equivalent [m.w.e.]. Defaults to 0.
                 deposition_rate_m_kyr (float, optional): Deposition rate in meters per kiloyear. Defaults to 0.
                 overburden_density_g_cm3 (float, optional): Overburden density in g/cm³. Defaults to 1.
-                nsteps (int, optional): Number of time steps for integration. Defaults to 75*(number of flux changes in scenario_config).
+                steps (int, optional): Number of time steps for integration. Defaults to 75*(number of flux changes in scenario_config).
                 total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.        
                 target_thickness_mm (float, optional): Thickness of the target [mm]. Defaults to 1.
                 x_grid (np.ndarray, optional): The bin edges for the internal track length spectrum [nm]. Defaults to TRACK_LENGTH_BINS_NM.
@@ -955,15 +955,15 @@ class Paleodetector:
 
             print(f"Integrating the signal in a {target_thickness_mm} mm slice of {self.name} with mass {sample_mass_kg*1e3} g, corresponding to {sample_mass_kg*1e3/(target_thickness_mm*0.1*self.config['density_g_cm3'])} cm2")
 
-            if not nsteps:
-                nsteps = len(scenario_config["event_fluxes"]) + int(deposition_rate_m_kyr*exposure_window_kyr/5.)
-
-            time_bins_kyr = np.linspace(0., exposure_window_kyr, nsteps + 1)
+            if not steps:
+                steps = len(scenario_config["event_fluxes"]) + int(deposition_rate_m_kyr*exposure_window_kyr/5.)
+            elif isinstance(steps, float):
+                steps = np.linspace(0., exposure_window_kyr, steps + 1)
 
             tasks = [(x_grid, t_kyr, scenario_config["name"], energy_bins_gev, 
                     initial_depth, deposition_rate_m_kyr, 
                     overburden_density_g_cm3, total_simulated_particles, target_thickness_mm, species)
-                    for t_kyr in time_bins_kyr]
+                    for t_kyr in steps]
 
             with Pool() as pool:
                 results = list(tqdm(pool.imap(self._integration_worker, tasks), total=len(tasks)))
