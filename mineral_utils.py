@@ -955,7 +955,7 @@ class Paleodetector:
 
             print(f"Integrating the signal in a {target_thickness_mm} mm slice of {self.name} with mass {sample_mass_kg*1e3} g, corresponding to {sample_mass_kg*1e3/(target_thickness_mm*0.1*self.config['density_g_cm3'])} cm2")
 
-            if isinstance(steps, np.array):
+            if isinstance(steps, np.ndarray):
                 t_kyr_array = steps
             else:
                 if not steps:
