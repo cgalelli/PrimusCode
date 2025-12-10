@@ -16,9 +16,9 @@ MYR_PER_SECOND = 1/ (60 * 60 * 24 * 365 * 1e6)
 
 # --- Binning setup ---
 
-RECOIL_N_BINS= 101
+RECOIL_N_BINS= 201
 RECOIL_ER_MIN_LOG_MEV= -2 
-RECOIL_ER_MAX_LOG_MEV= 3
+RECOIL_ER_MAX_LOG_MEV= 6
 RECOIL_ENERGY_BINS_MEV = np.logspace(RECOIL_ER_MIN_LOG_MEV, RECOIL_ER_MAX_LOG_MEV, RECOIL_N_BINS)
 
 LENGTH_N_BINS = 1000
@@ -668,7 +668,7 @@ class Paleodetector:
                 names = np.loadtxt(filepath, usecols=0, dtype=str, ndmin=1)
 
                 for name in names:
-                    if name not in ['He3', 'He4', 'He5', 'He6', 'He7', 'He8', 'alpha', 'proton', 'neutron']:
+                    if name not in ['He3', 'He4', 'He5', 'He6', 'He7', 'He8', 'alpha', 'proton']:
                         all_fragments.add(name)
         return sorted(list(all_fragments))
 
@@ -796,7 +796,10 @@ class Paleodetector:
 
         normalized_spectra = {}
         for name, spectrum in all_recoil_spectra.items():
-            normalized_spectra[name] = np.divide(spectrum, norm_factor, out=np.zeros_like(spectrum), where=norm_factor!=0)
+            if name == 'neutron':
+                normalized_spectra[name] = np.divide(spectrum, bin_widths_mev*total_simulated_particles, out=np.zeros_like(spectrum), where=norm_factor!=0)
+            else:
+                normalized_spectra[name] = np.divide(spectrum, norm_factor, out=np.zeros_like(spectrum), where=norm_factor!=0)
 
         np.savez(output_filepath, Er_bins=RECOIL_ENERGY_BINS_MEV, **normalized_spectra)
         print(f"    - Saved processed data to {output_filepath}")
@@ -827,7 +830,7 @@ class Paleodetector:
         
         for nuclide_name in all_fragments:
             if nuclide_name not in recoil_data: continue
-            
+            if nuclide_name == 'neutron': continue
             dRdEr_mev = recoil_data[nuclide_name]
             dRdEr_interp = interp1d(er_mid_mev, dRdEr_mev, bounds_error=False, fill_value=0.0)
 
