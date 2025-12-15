@@ -629,6 +629,12 @@ class Paleodetector:
                 continue
             
             energies, flux = np.loadtxt(flux_filepath, usecols=(0, col), unpack=True)
+
+            mask = flux>0.
+
+            energies = energies[mask]
+            flux = flux[mask]
+
             if species == 'mu+' or species == 'mu-':
                 flux /= 2.
             flux_arrays.append(flux)
@@ -645,7 +651,7 @@ class Paleodetector:
             interpolators.append(interp_func)
         
         self._flux_interpolators[f'{scenario_config["name"]}_{species}'] = interpolators
-        self._energy_GeV[scenario_config["name"]] = energies
+        self._energy_GeV[f'{scenario_config["name"]}_{species}'] = energies
 
     def _get_all_fragments(self, energy_names_gev, species='mu-'):
         """
@@ -695,7 +701,7 @@ class Paleodetector:
 
         flux_val = np.array([interp_func(t_kyr) for interp_func in self._flux_interpolators[f'{scenario_name}_{species}']])
 
-        flux_interpolator = log_interp1d(self._energy_GeV[scenario_name], flux_val)
+        flux_interpolator = log_interp1d(self._energy_GeV[f'{scenario_name}_{species}'], flux_val)
         maxdepth = self._depth_interpolators[species]['maxdepth']
         meanwidth = self._depth_interpolators[species]['meanwidth']
 
