@@ -73,7 +73,7 @@ void DetectorConstruction::DefineMaterials()
   Water->AddElement(H, 2);
   Water->AddElement(O, 1);
 
-  G4Material* Quartz = new G4Material("StdRock",2.65*CLHEP::g/CLHEP::cm3,2, kStateSolid );
+  G4Material* Quartz = new G4Material("Quartz",2.65*CLHEP::g/CLHEP::cm3,2, kStateSolid );
   Quartz->AddElement(O,  67.*perCent);
   Quartz->AddElement(Si, 33.*perCent);
 
