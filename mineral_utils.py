@@ -637,6 +637,9 @@ class Paleodetector:
 
             if species == 'mu+' or species == 'mu-':
                 flux /= 2.
+            elif species == 'neutron':
+                flux = flux[18]*np.exp(-0.15/energies)*(energies/energies[18])**(-2.7)
+
             flux_arrays.append(flux)
         
         flux_arrays = np.array(flux_arrays)
@@ -647,7 +650,7 @@ class Paleodetector:
 
         interpolators = []
         for i in range(len(flux_arrays[0])):
-            interp_func = interp1d(times, flux_arrays[:, i], kind=kind, fill_value="extrapolate")
+            interp_func = interp1d(times, flux_arrays[:, i], kind=kind, fill_value="extrapolate", bounds_error=False)
             interpolators.append(interp_func)
         
         self._flux_interpolators[f'{scenario_config["name"]}_{species}'] = interpolators
