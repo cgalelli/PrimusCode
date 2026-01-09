@@ -4,6 +4,7 @@ import os
 from scipy.interpolate import interp1d, InterpolatedUnivariateSpline
 from scipy.integrate import quad
 from scipy.special import erf
+from scipy.stats import norm
 from mendeleev import element
 from tqdm import tqdm
 from multiprocessing import Pool
@@ -15,7 +16,6 @@ AVOGADRO_NUMBER = 6.022e23
 MYR_PER_SECOND = 1/ (60 * 60 * 24 * 365 * 1e6)
 
 # --- Binning setup ---
-
 RECOIL_N_BINS= 201
 RECOIL_ER_MIN_LOG_MEV= -2 
 RECOIL_ER_MAX_LOG_MEV= 6
@@ -27,7 +27,6 @@ LENGTH_MAX_LOG_NM = 5.5
 TRACK_LENGTH_BINS_NM = np.logspace(LENGTH_MIN_LOG_NM, LENGTH_MAX_LOG_NM, LENGTH_N_BINS)
 
 # --- Utility Functions ---
-
 def log_interp1d(xx, yy, kind='linear'):
     """
     Performs an interpolation in log-log space for better accuracy with wide-ranging data.
@@ -192,8 +191,29 @@ def slice_spectrum(x_bins, counts, angular_pdf=None, phi_cut_deg=0., l_min_measu
 
     return hist_norm
 
-# --- Main Paleodetector Class ---
+def detection_model_efficiency(x_bins, counts, model_mean, model_std):
+    """
+    Multiplies counts (sliced) with the efficiency function for the detection model
+    
+    Args:
+        x_bins (np.ndarray): The bin edges for the track length spectrum R [nm].
+        counts (np.ndarray): The array of track counts N(R) in each bin.
+        model_mean (float): Peak length for the efficiency distribution.
+        model_std (float): Standard deviation of the efficiency distirbution assuming normal shape.
+        
+    Returns:
+        np.ndarray: Efficiency-corrected counts.
+    """
 
+    x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
+
+    eff = norm.pdf(x_mids, loc = model_mean, scale = model_std)
+
+    counts_with_efficiency = counts * eff / eff.max()
+    
+    return counts_with_efficiency
+
+# --- Main Paleodetector Class ---
 class Paleodetector:
     """
     A class to handle all physics calculations for a specific mineral.
