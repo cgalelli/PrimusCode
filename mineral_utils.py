@@ -191,7 +191,7 @@ def slice_spectrum(x_bins, counts, angular_pdf=None, phi_cut_deg=0., l_min_measu
 
     return hist_norm
 
-def detection_model_efficiency(x_bins, counts, model_mean, model_std):
+def detection_model_efficiency(x_bins, counts, model_mean, sigma_left, sigma_right=None):
     """
     Multiplies counts (sliced) with the efficiency function for the detection model
     
@@ -199,7 +199,8 @@ def detection_model_efficiency(x_bins, counts, model_mean, model_std):
         x_bins (np.ndarray): The bin edges for the track length spectrum R [nm].
         counts (np.ndarray): The array of track counts N(R) in each bin.
         model_mean (float): Peak length for the efficiency distribution.
-        model_std (float): Standard deviation of the efficiency distirbution assuming normal shape.
+        sigma_left (float): Left standard deviation of the efficiency distirbution assuming asymmetric normal shape.
+        sigma_right (float, optional): Right standard deviation of the efficiency distirbution assuming asymmetric normal shape.
         
     Returns:
         np.ndarray: Efficiency-corrected counts.
@@ -207,9 +208,18 @@ def detection_model_efficiency(x_bins, counts, model_mean, model_std):
 
     x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
 
-    eff = norm.pdf(x_mids, loc = model_mean, scale = model_std)
+    eff = np.zeros_like(x_mids)
 
-    counts_with_efficiency = counts * eff / eff.max()
+    if sigma_right is None:
+        sigma_right = sigma_left
+
+    center = np.argmin(np.abs(model_mean - x_mids))
+
+    eff[:center] = np.exp(-(x_mids[:center] - model_mean)**2 / (2 * sigma_left**2))
+    eff[center] = 1.0
+    eff[center+1:] = np.exp(-(x_mids[center+1:] - model_mean)**2 / (2 * sigma_right**2))
+
+    counts_with_efficiency = counts * eff
     
     return counts_with_efficiency
 
