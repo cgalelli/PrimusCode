@@ -4,7 +4,6 @@ import os
 from scipy.interpolate import interp1d, InterpolatedUnivariateSpline
 from scipy.integrate import quad
 from scipy.special import erf
-from scipy.stats import norm
 from mendeleev import element
 from tqdm import tqdm
 from multiprocessing import Pool
