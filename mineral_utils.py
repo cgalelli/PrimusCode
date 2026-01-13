@@ -190,7 +190,7 @@ def slice_spectrum(x_bins, counts, angular_pdf=None, phi_cut_deg=0., l_min_measu
 
     return hist_norm
 
-def detection_model_efficiency(x_bins, counts, model_mean, sigma_left, sigma_right=None):
+def detection_model_efficiency(x_bins, counts, precision, recall, model_mean, sigma_left, sigma_right=None):
     """
     Multiplies counts (sliced) with the efficiency function for the detection model
     
@@ -218,8 +218,8 @@ def detection_model_efficiency(x_bins, counts, model_mean, sigma_left, sigma_rig
     eff[center] = 1.0
     eff[center+1:] = np.exp(-(x_mids[center+1:] - model_mean)**2 / (2 * sigma_right**2))
 
-    counts_with_efficiency = counts * eff
-    
+    counts_with_efficiency = counts * eff * precision / recall
+
     return counts_with_efficiency
 
 # --- Main Paleodetector Class ---
