@@ -197,6 +197,8 @@ def detection_model_efficiency(x_bins, counts, precision, recall, model_mean, si
     Args:
         x_bins (np.ndarray): The bin edges for the track length spectrum R [nm].
         counts (np.ndarray): The array of track counts N(R) in each bin.
+        precision (float): Precision of the counting model.
+        recall (float): Recall of the counting model.
         model_mean (float): Peak length for the efficiency distribution.
         sigma_left (float): Left standard deviation of the efficiency distirbution assuming asymmetric normal shape.
         sigma_right (float, optional): Right standard deviation of the efficiency distirbution assuming asymmetric normal shape.
@@ -218,7 +220,7 @@ def detection_model_efficiency(x_bins, counts, precision, recall, model_mean, si
     eff[center] = 1.0
     eff[center+1:] = np.exp(-(x_mids[center+1:] - model_mean)**2 / (2 * sigma_right**2))
 
-    counts_with_efficiency = counts * eff * precision / recall
+    counts_with_efficiency = counts * eff * recall / precision
 
     return counts_with_efficiency
 
