@@ -190,7 +190,7 @@ def slice_spectrum(x_bins, counts, angular_pdf=None, phi_cut_deg=0., l_min_measu
 
     return hist_norm
 
-def detection_model_efficiency(x_bins, counts, precision, recall, model_mean, sigma_left, sigma_right=None):
+def detection_model_efficiency(x_bins, counts, precision, recall, model_mean, sigma_left, sigma_right=None, meas_error=1000.):
     """
     Multiplies counts (sliced) with the efficiency function for the detection model
     
@@ -222,7 +222,9 @@ def detection_model_efficiency(x_bins, counts, precision, recall, model_mean, si
 
     counts_with_efficiency = counts * eff * recall / precision
 
-    return counts_with_efficiency
+    counts_with_measure = smear_spectrum(counts_with_efficiency, len(x_bins)//2*2-1, meas_error/np.diff(x_bins)[0], meas_error/np.diff(x_bins)[0])
+
+    return counts_with_measure
 
 # --- Main Paleodetector Class ---
 class Paleodetector:
@@ -257,6 +259,7 @@ class Paleodetector:
         self._flux_interpolators = {}
         self._energy_GeV = {}
         self._depth_interpolators = {}
+        self.secondary_lut = {}
         
         print(f"Initialized Paleodetector: {self.name}")
 
@@ -597,9 +600,13 @@ class Paleodetector:
         """
         pen = []
         width = []
+        attenuation = []
+
         pri_energies = np.logspace(-3, 3, 10)
 
         tab_species = 'mu-' if species == 'mu-' or species == 'mu+' else 'neutron'
+
+        cylinder = 500. if species == 'mu-' or species == 'mu+' else 100.
 
         for energy_name in pri_energies:
 
@@ -610,18 +617,32 @@ class Paleodetector:
 
             energies, depth, rem_energy = np.loadtxt(filepath, usecols=(2, 3, 5), dtype = str, unpack=True)
             energies = energies.astype(float)
-            depth = 500 - depth.astype(float)/1000.
+            depth = cylinder - depth.astype(float)/1000.
             rem_energy = rem_energy.astype(float)
 
-            pen.append(depth[rem_energy == 0].mean()*2.65)
-            width.append(depth[rem_energy == 0].std()*2.65)
-
+            if tab_species == 'mu-':
+                pen.append(depth[rem_energy == 0].mean()*2.65)
+                width.append(depth[rem_energy == 0].std()*2.65)
+                
+            else:
+                steps = np.linspace(0, 1, 50)
+                midsteps = steps[:-1] + np.diff(steps) / 2
+                counts = np.histogram(depth*2.65, bins = steps)[0]
+                slope = np.polyfit(midsteps, np.log(counts), 1)[0]
+                attenuation.append(-1./slope)
+        
         self._depth_interpolators[species] = {}
-        self._maxdepth_interp = interp1d(pri_energies[:-1], pen[:-1], kind='linear', fill_value='extrapolate', bounds_error=False)
-        self._meanwidth_interp = interp1d(pri_energies[:-1], width[:-1], kind='linear', fill_value='extrapolate', bounds_error=False)
 
-        self._depth_interpolators[species]['maxdepth'] = self._clipped_maxdepth
-        self._depth_interpolators[species]['meanwidth'] = self._clipped_meanwidth
+        if tab_species == 'mu-':
+
+            self._maxdepth_interp = interp1d(pri_energies[:-1], pen[:-1], kind='linear', fill_value='extrapolate', bounds_error=False)
+            self._meanwidth_interp = interp1d(pri_energies[:-1], width[:-1], kind='linear', fill_value='extrapolate', bounds_error=False)
+
+            self._depth_interpolators[species]['maxdepth'] = self._clipped_maxdepth
+            self._depth_interpolators[species]['meanwidth'] = self._clipped_meanwidth
+
+        else:
+            self._depth_interpolators[species]['attenuation'] = interp1d(pri_energies, attenuation, kind='linear', fill_value='extrapolate', bounds_error=False)
 
     def _clipped_maxdepth(self, x):
         """Clipped maximum penetration depth (pickleable instance method)."""
@@ -663,13 +684,14 @@ class Paleodetector:
 
             mask = flux>0.
 
-            energies = energies[mask]
+            energies_n = energies[mask]
             flux = flux[mask]
 
             if species == 'mu+' or species == 'mu-':
                 flux /= 2.
             elif species == 'neutron':
-                flux = flux[18]*np.exp(-0.15/energies)*(energies/energies[18])**(-2.7)
+                energies = np.logspace(-2, 4, 50)
+                flux = flux[18]*np.exp(-0.225/energies)*(energies/energies_n[18])**(-2.7)
 
             flux_arrays.append(flux)
         
@@ -736,8 +758,12 @@ class Paleodetector:
         flux_val = np.array([interp_func(t_kyr) for interp_func in self._flux_interpolators[f'{scenario_name}_{species}']])
 
         flux_interpolator = log_interp1d(self._energy_GeV[f'{scenario_name}_{species}'], flux_val)
-        maxdepth = self._depth_interpolators[species]['maxdepth']
-        meanwidth = self._depth_interpolators[species]['meanwidth']
+
+        if species == 'mu-' or species == 'mu+':
+            maxdepth = self._depth_interpolators[species]['maxdepth']
+            meanwidth = self._depth_interpolators[species]['meanwidth']
+        else:
+            slope = self._depth_interpolators[species]['attenuation']
 
         all_fragments = self._get_all_fragments(energy_bins_gev[:-1], species)
 
@@ -758,33 +784,41 @@ class Paleodetector:
 
             E_grid, C_grid = np.meshgrid(e_vals, c_vals)
 
-            flux_grid = flux_interpolator(E_grid)
-            D_grid = maxdepth(E_grid)
-            W_grid = meanwidth(E_grid)
-
             z_min_grid = depth_mwe / C_grid
             target_thickness_mwe = target_thickness_mm * 0.001 * self.config['density_g_cm3']
             z_max_grid = z_min_grid + target_thickness_mwe / C_grid
 
-            effective_min = np.maximum(z_min_grid, D_grid)
-            top_A = np.minimum(z_max_grid, D_grid)
-            val_A = np.maximum(0.0, top_A - z_min_grid)
+            flux_grid = flux_interpolator(E_grid)
 
-            mask = z_max_grid > effective_min
-            val_B = np.zeros_like(z_max_grid)
+            if species == 'mu-' or species == 'mu+':
+                D_grid = maxdepth(E_grid)
+                W_grid = meanwidth(E_grid)
 
-            val_B[mask] = W_grid[mask] * (np.exp(-(effective_min[mask] - D_grid[mask])/W_grid[mask]) - np.exp(-(z_max_grid[mask] - D_grid[mask])/W_grid[mask]))
+                effective_min = np.maximum(z_min_grid, D_grid)
+                top_A = np.minimum(z_max_grid, D_grid)
+                val_A = np.maximum(0.0, top_A - z_min_grid)
 
-            prob_tail_grid = (val_A + val_B) / (D_grid + W_grid)
-            integrand_tail = flux_grid * prob_tail_grid
+                mask = z_max_grid > effective_min
+                val_B = np.zeros_like(z_max_grid)
 
-            weight_elastic = np.trapezoid(np.trapezoid(integrand_tail, e_vals, axis=1), c_vals)
+                val_B[mask] = W_grid[mask] * (np.exp(-(effective_min[mask] - D_grid[mask])/W_grid[mask]) - np.exp(-(z_max_grid[mask] - D_grid[mask])/W_grid[mask]))
 
-            if species == 'mu-':
-                prob_peak_grid = 0.5 * (erf((z_max_grid - D_grid) / (np.sqrt(2) * W_grid)) - erf((z_min_grid - D_grid) / (np.sqrt(2) * W_grid)))
-                integrand_peak = flux_grid * prob_peak_grid
+                prob_tail_grid = (val_A + val_B) / (D_grid + W_grid)
+                integrand_tail = flux_grid * prob_tail_grid
 
-                weight_peak = np.trapezoid(np.trapezoid(integrand_peak, e_vals, axis=1), c_vals)
+                weight_elastic = np.trapezoid(np.trapezoid(integrand_tail, e_vals, axis=1), c_vals)
+
+                if species == 'mu-':
+                    prob_peak_grid = 0.5 * (erf((z_max_grid - D_grid) / (np.sqrt(2) * W_grid)) - erf((z_min_grid - D_grid) / (np.sqrt(2) * W_grid)))
+                    integrand_peak = flux_grid * prob_peak_grid
+
+                    weight_peak = np.trapezoid(np.trapezoid(integrand_peak, e_vals, axis=1), c_vals)
+
+            else:
+                lambda_grid = slope(E_grid) 
+                prob_attenuation_grid = np.exp(-z_min_grid / lambda_grid) - np.exp(-z_max_grid / lambda_grid)
+                integrand = flux_grid * prob_attenuation_grid
+                weight_elastic = np.trapezoid(np.trapezoid(integrand, e_vals, axis=1), c_vals)
 
             filepath = os.path.join(geant4_input_dir, f"outNuclei_{e_min:.6f}.txt")
             if not os.path.exists(filepath): continue
