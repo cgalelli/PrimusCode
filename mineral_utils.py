@@ -691,7 +691,7 @@ class Paleodetector:
                 flux /= 2.
             elif species == 'neutron':
                 energies = np.logspace(-2, 4, 50)
-                flux = flux[18]*np.exp(-0.225/energies)*(energies/energies_n[18])**(-2.7)
+                flux = flux[18]*np.exp(-0.675/energies)*(energies/energies_n[18])**(-2.4)
 
             flux_arrays.append(flux)
         
