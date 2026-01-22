@@ -36,7 +36,7 @@ Quartz:
   stoich:
   - 1
   - 2
-  uranium_concentration_g_g: 1.0e-05
+  uranium_concentration_g_g: 1.0e-06
   density_g_cm3: 2.6
 Spinel:
   name: Spinel

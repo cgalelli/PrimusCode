@@ -229,7 +229,7 @@ def detection_model_efficiency(x_bins, counts, precision, recall, model_mean, si
 # --- Main Paleodetector Class ---
 class Paleodetector:
     """
-    A class to handle all physics calculations for a specific mineral.
+    A class to handle all physics calculations for a specific self.
     
     This class is initialized with a configuration dictionary and provides
     methods to calculate various signal and background components for
@@ -251,7 +251,11 @@ class Paleodetector:
         self.shortname = mineral_config["shortname"]
         self.composition = mineral_config['composition']
         self.data_path = data_path_prefix
+
+        self.radiogenic_spectrum = self._radiogenic_spectrum()
         
+        self.alpha_n_spectrum = self._alpha_n_spectrum()
+
         self._srim_cache = {}
         self._recoil_cache = {}
         self._nuclear_data_cache = {}
@@ -417,52 +421,168 @@ class Paleodetector:
         length_um = np.sqrt(x_um**2 + y_um**2 + z_um**2)
 
         return e_kev, dee_dx, den_dx, length_um
-
-    def calculate_neutron_spectrum(self, x_bins=TRACK_LENGTH_BINS_NM):
-        """
-        Calculates the differential track rate from radiogenic neutrons.
-
-        Args:
-            x_bins (np.ndarray): The bin edges for the output track length spectrum [nm].
+    
+    def _radiogenic_spectrum(self):
+        """Calculates the absolute neutron flux from Spontaneous fission.
 
         Returns:
-            np.ndarray: The differential track rate (dR/dx) [events/kg/Myr/nm].
+            interpolator (np.interp1d): Interpolator of energy vs fluxes in /m2/s/GeV.
         """
-        if not self.config.get("uranium_concentration_g_g"):
-            print("Warning: Uranium concentration not set. Cannot calculate neutron background.")
-            return np.zeros(len(x_bins) - 1)
-            
-        print("Calculating radiogenic neutron background...")
-        neutron_interp_dict = self._load_neutron_bkg()
-        x_mid = x_bins[:-1] + np.diff(x_bins) / 2.0
-        dRdx = np.zeros_like(x_mid)
+        sf_yield_per_g_s = 0.422 * 1e4
+        total_sf_rate = self.config['uranium_concentration_g_g'] * sf_yield_per_g_s
+        energies = np.logspace(-6, -1, 100)
 
-        for i, nuc_name in enumerate(self.config['nuclei']):
-            if nuc_name == "H":
+        a, b = 0.00065, 3700.0
+        watt_shape = np.exp(-energies / a) * np.sinh(np.sqrt(b * energies))
+        
+        sf_flux = watt_shape * (total_sf_rate / np.trapezoid(watt_shape, energies))
+
+        interpolator = interp1d(energies, sf_flux, bounds_error=False, fill_value='extrapolate')
+
+        return interpolator
+    
+    def _alpha_n_spectrum(self):
+        """Calculates the absolute neutron flux from alpha,n reactions.
+
+        Returns:
+            interpolator (np.interp1d): Interpolator of energy vs fluxes in /m2/s/GeV.
+        """
+        an_yield_per_g_s = 350.0 * 1e4
+        mean_e_gev, sigma_e_gev, cutoff_e_gev = 0.0020, 0.0010, 0.002
+        
+        energies = np.logspace(-6, -1, 100)
+
+        total_an_rate = self.config['uranium_concentration_g_g'] * an_yield_per_g_s
+    
+        an_shape = np.exp(-0.5 * ((energies - mean_e_gev) / sigma_e_gev)**2)
+        an_shape *= 1.0 / (1.0 + np.exp((energies - cutoff_e_gev) / 0.0005)) 
+    
+        an_flux = an_shape * (total_an_rate / np.trapezoid(an_shape, energies))
+
+        interpolator = interp1d(energies, an_flux, bounds_error=False, fill_value='extrapolate')
+
+        return interpolator
+
+    def calculate_neutron_spectrum(self, background_type, energy_bins_gev, target_thickness_mm=0.01, total_simulated_particles=1e4):
+        """
+        Processes raw Geant4 data for neutrons from spontaneous fission or from alpha,n reactions, creating a normalized recoil spectrum file.
+
+        Args:
+            background_type (str): The specific background to compute for.
+            energy_bins_gev (np.ndarray): The energy bin edges [GeV].
+            total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.
+            target_thickness_mm (float): The thickness of the target [mm].
+        """
+        
+        if background_type == 'fission_n':
+            flux_interpolator = self.radiogenic_spectrum
+        elif background_type == 'alpha_n':
+            flux_interpolator = self.alpha_n_spectrum
+
+        all_fragments = self._get_all_fragments(energy_bins_gev[:-1], 'neutron')
+
+        geant4_input_dir = os.path.join(self.data_path, "Geant4_data", f"{self.name}_neutron")
+                
+        all_recoil_spectra = {}
+
+        fragment_spectra = {frag: np.zeros(len(RECOIL_ENERGY_BINS_MEV) - 1) for frag in all_fragments}
+
+        for i in range(len(energy_bins_gev) - 1):
+            e_min = energy_bins_gev[i]
+            e_max = energy_bins_gev[i+1]
+
+            N_E = 50
+            e_vals = np.linspace(e_min, e_max, N_E)
+
+            flux_grid = flux_interpolator(e_vals)
+
+            weight = np.trapezoid(flux_grid, e_vals)
+
+            filepath = os.path.join(geant4_input_dir, f"outNuclei_{e_min:.6f}.txt")
+            if not os.path.exists(filepath): continue
+
+            try:
+                df = pd.read_csv(filepath, sep=r'\s+', header=None, usecols=[0, 2], 
+                                names=['name', 'rec_e'], dtype={'name': str, 'rec_e': float})
+                names = df['name'].values
+                rec_energies = df['rec_e'].values
+            except pd.errors.EmptyDataError:
                 continue
 
-            ion_z = element(nuc_name).atomic_number
-            srim_func, e, dee_dx, den_dx, x = self._load_srim_data(ion_z)
-            if not srim_func: continue
+            valid_mask = np.isin(names, list(fragment_spectra.keys()))
+            valid_names = names[valid_mask]
+            valid_rec = rec_energies[valid_mask]
 
-            sorted_indices = np.argsort(x)
+            unique_frags = np.unique(valid_names)
+
+            for frag in unique_frags:
+                frag_mask = (valid_names == frag)
+                frag_rec_energies = valid_rec[frag_mask]
+
+                counts, _ = np.histogram(frag_rec_energies, bins=RECOIL_ENERGY_BINS_MEV)
+                fragment_spectra[frag] += counts * weight
+
+        all_recoil_spectra.update(fragment_spectra)
+
+        bin_widths_mev = np.diff(RECOIL_ENERGY_BINS_MEV)
+        norm_factor = (bin_widths_mev * target_thickness_mm * self.config['density_g_cm3'] * total_simulated_particles * MYR_PER_SECOND)
+
+        output_dir = os.path.join(self.data_path, "processed_recoils")
+        os.makedirs(output_dir, exist_ok=True)
+        output_filepath = os.path.join(output_dir, f"{self.name}_{background_type}.npz")
+
+        normalized_spectra = {}
+        for name, spectrum in all_recoil_spectra.items():
+            normalized_spectra[name] = np.divide(spectrum, norm_factor, out=np.zeros_like(spectrum), where=norm_factor!=0)
+
+        np.savez(output_filepath, Er_bins=RECOIL_ENERGY_BINS_MEV, **normalized_spectra)
+        print(f"    - Saved processed data to {output_filepath}")
         
-            x_to_e_func = InterpolatedUnivariateSpline(x[sorted_indices]*1e3, e[sorted_indices], k=1)
-            x_to_dedx_func = InterpolatedUnivariateSpline(x[sorted_indices]*1e3, (dee_dx[sorted_indices]+den_dx[sorted_indices])*1e-3, k=1)
-
-            dRdE_kev = neutron_interp_dict[nuc_name](x_to_e_func(x_mid))
-            dRdx += self.config['stoich'][i] *dRdE_kev * np.abs(x_to_dedx_func(x_mid))
-    
-        return dRdx * self.config["uranium_concentration_g_g"] / 0.1e-9
-    
-    def integrate_neutron_spectrum(self, x_bins, age, sample_mass, x_grid=TRACK_LENGTH_BINS_NM):
-
+    def integrate_neutron_spectrum(
+        self, 
+        x_bins, 
+        energy_bins_gev, 
+        total_exposure_kyr, 
+        sample_mass_kg,
+        background_types=['fission_n', 'alpha_n'],
+        total_simulated_particles=1e4, 
+        target_thickness_mm=0.01, 
+        x_grid=TRACK_LENGTH_BINS_NM, 
+        ):
+        """
+        Integrates the neutron-induced recoil spectrum over specified background types to obtain total track counts.
+        
+        Args:
+            x_bins (np.ndarray): The bin edges for the output track length spectrum [nm].
+            energy_bins_gev (np.ndarray): The energy bin edges [GeV].
+            total_exposure_kyr (float): The total exposure time [kyr].
+            sample_mass_kg (float): The mass of the mineral sample [kg].
+            background_types (list, optional): List of background types to include. Defaults to ['fission', 'alpha_n'].
+            total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.
+            target_thickness_mm (float): The thickness of the target [mm].
+            x_grid (np.ndarray, optional): The grid for track length spectrum calculation. Defaults to TRACK_LENGTH_BINS_NM.
+        Returns:
+            np.ndarray: The total track counts in each bin.
+        """
         x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
         x_mids_grid = x_grid[:-1] + np.diff(x_grid) / 2.0
 
-        drdx = self.calculate_neutron_spectrum(x_grid) * age * sample_mass * 1e-3
+        sum_drdx = np.zeros_like(x_mids_grid)
 
-        total_tracks_interp  = interp1d(x_mids_grid, np.array(drdx),  bounds_error=False, fill_value='extrapolate')
+        for background_type in background_types:
+            filepath = os.path.join(self.data_path, "processed_recoils", f"{self.name}_{background_type}.npz")
+            if not os.path.exists(filepath):
+                self.calculate_neutron_spectrum(background_type, energy_bins_gev, total_simulated_particles, target_thickness_mm)
+
+            recoil_data = np.load(filepath)
+
+            drdx = self._convert_recoil_to_track_spectrum(x_bins=x_grid, recoil_data=recoil_data, energy_bins_gev=energy_bins_gev, species='neutron')
+
+            sum_drdx += drdx['total']
+
+        sum_drdx *= total_exposure_kyr * 1e-3 * sample_mass_kg
+
+        total_tracks_interp  = interp1d(x_mids_grid, np.array(sum_drdx),  bounds_error=False, fill_value='extrapolate')
 
         total_tracks = [quad(total_tracks_interp, x_bins[i], x_bins[i+1])[0] for i in range(len(x_mids))]
 
@@ -748,7 +868,6 @@ class Paleodetector:
             species (str, optional): The particle species to simulate ('mu+', 'mu-', or 'neutron'). Defaults to 'mu-'.
         """
 
-
         if not self._flux_interpolators[f'{scenario_name}_{species}']:
             raise ValueError(f"Flux interpolators not initialized for scenario {scenario_name} and species {species}.")
 
@@ -1001,7 +1120,7 @@ class Paleodetector:
                 deposition_rate_m_kyr=0, 
                 overburden_density_g_cm3=1., 
                 steps=None, 
-                total_simulated_particles=1e5, 
+                total_simulated_particles=1e4, 
                 target_thickness_mm=0.01, 
                 x_grid=TRACK_LENGTH_BINS_NM, 
                 species='mu-'):
