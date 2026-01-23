@@ -120,7 +120,7 @@ def calibrate_spectrum(x_bins, counts, x_scale_factor=1.0, y_scale_factor=1.0):
 
     return calibrated_y*y_scale_factor
 
-def slice_spectrum(x_bins, counts, angular_pdf=None, phi_cut_deg=0., l_min_measurable=300., l_max_measurable=50000., pit_width=500., bulk_etching_depth=100., f_phi= lambda phi: 1., n_samples=1e6, correction=True):
+def slice_spectrum(x_bins, counts, angular_pdf=None, phi_cut_deg=0., l_min_measurable=300., l_max_measurable=50000., pit_width=500., bulk_etching_depth=1000., f_phi= lambda phi: 1., n_samples=1e6, correction=True):
     """
     Applies Monte Carlo simulation of track slicing, accounting for geometrical, angular, 
     and experimental filtering effects (min/max measurable length).
@@ -294,39 +294,6 @@ class Paleodetector:
         self._nuclear_data_cache[filename] = np.loadtxt(filepath, usecols=cols_to_use, unpack=True)
         return self._nuclear_data_cache[filename]
     
-    def _load_neutron_bkg(self):
-        """
-        Loads and caches the radiogenic neutron background spectrum from a file.
-
-        Returns:
-            dict: A dictionary of interpolation functions, keyed by nucleus symbol,
-                  for the differential neutron recoil rate [events/kg/day/keV].
-        """
-        if self._neutron_bkg_cache:
-            return self._neutron_bkg_cache
-
-        fname = os.path.join(self.data_path, "neutron_data", f"{self.name}_ninduced_wan.dat")
-        if not os.path.exists(fname):
-            raise FileNotFoundError(f"Neutron background file not found: {fname}")
-
-        with open(fname) as f:
-            head = f.readlines()[1]
-            columns = [c.strip() for c in head.split(",")]
-        
-        data = np.loadtxt(fname)
-        E_list = data[:, 0]
-        
-        neutron_interp_dict = {}
-        for i, nuc in enumerate(self.config['nuclei']):
-            dRdE_list = np.zeros_like(E_list)
-            for j, col_name in enumerate(columns):
-                if col_name.startswith(nuc):
-                    dRdE_list += data[:, j]
-            neutron_interp_dict[nuc] = interp1d(E_list, dRdE_list, bounds_error=False, fill_value=0.0)
-        
-        self._neutron_bkg_cache = neutron_interp_dict
-        return self._neutron_bkg_cache
-    
     def _load_srim_data(self, ion_z):
         """
         Loads and caches processed SRIM data for a given ion, creating an energy-to-range function.
@@ -423,47 +390,52 @@ class Paleodetector:
         return e_kev, dee_dx, den_dx, length_um
     
     def _radiogenic_spectrum(self):
-        """Calculates the absolute neutron flux from Spontaneous fission.
+        """
+        Calculates the absolute neutron flux from Spontaneous fission.
+        Based on Cranberg et al., Phys. Rev. 103, 662 (1956), https://www.wise-uranium.org/ranc.html
 
         Returns:
-            interpolator (np.interp1d): Interpolator of energy vs fluxes in /m2/s/GeV.
+            interpolator (np.interp1d): Interpolator of energy vs fluxes in g^-1 s^-1 GeV^-1.
         """
-        sf_yield_per_g_s = 0.422 * 1e4
-        total_sf_rate = self.config['uranium_concentration_g_g'] * sf_yield_per_g_s
+        sf_yield_per_gu_s = 0.1353
+        sf_yield_per_g_s = self.config['uranium_concentration_g_g'] * sf_yield_per_gu_s
         energies = np.logspace(-6, -1, 100)
 
         a, b = 0.00065, 3700.0
         watt_shape = np.exp(-energies / a) * np.sinh(np.sqrt(b * energies))
         
-        sf_flux = watt_shape * (total_sf_rate / np.trapezoid(watt_shape, energies))
+        sf_flux = watt_shape * (sf_yield_per_g_s/ np.trapezoid(watt_shape, energies))
 
         interpolator = interp1d(energies, sf_flux, bounds_error=False, fill_value='extrapolate')
 
         return interpolator
     
     def _alpha_n_spectrum(self):
-        """Calculates the absolute neutron flux from alpha,n reactions.
-
-        Returns:
-            interpolator (np.interp1d): Interpolator of energy vs fluxes in /m2/s/GeV.
         """
-        an_yield_per_g_s = 350.0 * 1e4
-        mean_e_gev, sigma_e_gev, cutoff_e_gev = 0.0020, 0.0010, 0.002
+        Calculates the absolute neutron flux from alpha,n reactions.
+        Based on Kudryavtsev at al., SciPost Phys. Proc. 12, 2023 (SOURCES4)
         
-        energies = np.logspace(-6, -1, 100)
+        Returns:
+            interpolator (np.interp1d): Interpolator of energy vs fluxes in g^-1 s^-1 GeV^-1.
+        """
+        an_yield_per_gu_s = 8 * 1.245 * 1e-5 * 1e9 / 1e6
 
-        total_an_rate = self.config['uranium_concentration_g_g'] * an_yield_per_g_s
-    
-        an_shape = np.exp(-0.5 * ((energies - mean_e_gev) / sigma_e_gev)**2)
-        an_shape *= 1.0 / (1.0 + np.exp((energies - cutoff_e_gev) / 0.0005)) 
-    
-        an_flux = an_shape * (total_an_rate / np.trapezoid(an_shape, energies))
+        an_yield_per_g_s = an_yield_per_gu_s * self.config['uranium_concentration_g_g']
 
-        interpolator = interp1d(energies, an_flux, bounds_error=False, fill_value='extrapolate')
+        alpha, beta_gev, cutoff_e_gev = 2, 900, 0.0065
+
+        energies_gev = np.logspace(-4, -0.5, 100)
+
+        an_shape_gev = (energies_gev**alpha)* np.exp(-beta_gev*energies_gev)
+        an_shape_gev *= 1.0 / (1.0 + np.exp((energies_gev - cutoff_e_gev) / 0.0005))
+
+        an_flux_gev = an_shape_gev * (an_yield_per_g_s / np.trapezoid(an_shape_gev, energies_gev))
+
+        interpolator = interp1d(energies_gev, an_flux_gev, bounds_error=False, fill_value='extrapolate')
 
         return interpolator
 
-    def calculate_neutron_spectrum(self, background_type, energy_bins_gev, target_thickness_mm=0.01, total_simulated_particles=1e4):
+    def calculate_background_neutron_spectrum(self, background_type, energy_bins_gev, total_simulated_particles=1e4):
         """
         Processes raw Geant4 data for neutrons from spontaneous fission or from alpha,n reactions, creating a normalized recoil spectrum file.
 
@@ -525,7 +497,7 @@ class Paleodetector:
         all_recoil_spectra.update(fragment_spectra)
 
         bin_widths_mev = np.diff(RECOIL_ENERGY_BINS_MEV)
-        norm_factor = (bin_widths_mev * target_thickness_mm * self.config['density_g_cm3'] * total_simulated_particles * MYR_PER_SECOND)
+        norm_factor = (bin_widths_mev * total_simulated_particles * MYR_PER_SECOND * 1e-3)
 
         output_dir = os.path.join(self.data_path, "processed_recoils")
         os.makedirs(output_dir, exist_ok=True)
@@ -538,7 +510,7 @@ class Paleodetector:
         np.savez(output_filepath, Er_bins=RECOIL_ENERGY_BINS_MEV, **normalized_spectra)
         print(f"    - Saved processed data to {output_filepath}")
         
-    def integrate_neutron_spectrum(
+    def integrate_background_neutron_spectrum(
         self, 
         x_bins, 
         energy_bins_gev, 
@@ -546,7 +518,7 @@ class Paleodetector:
         sample_mass_kg,
         background_types=['fission_n', 'alpha_n'],
         total_simulated_particles=1e4, 
-        target_thickness_mm=0.01, 
+        target_thickness_mm=0.001, 
         x_grid=TRACK_LENGTH_BINS_NM, 
         ):
         """
@@ -854,7 +826,7 @@ class Paleodetector:
                         all_fragments.add(name)
         return sorted(list(all_fragments))
 
-    def _process_geant4_data(self, t_kyr, scenario_name, energy_bins_gev, depth_mwe=0., total_simulated_particles=1e4, target_thickness_mm=0.01, species='mu-'):
+    def _process_geant4_data(self, t_kyr, scenario_name, energy_bins_gev, depth_mwe=0., total_simulated_particles=1e4, target_thickness_mm=0.001, species='mu-'):
         """
         Processes raw Geant4 data for a given scenario, creating a normalized recoil spectrum file.
 
@@ -1048,7 +1020,7 @@ class Paleodetector:
         
         return dRdx_by_nucleus
 
-    def calculate_particle_signal_spectrum(self, x_bins, t_kyr, scenario_name, energy_bins_gev, depth_mwe, total_simulated_particles=1e5,  target_thickness_mm=0.01, species='mu-', nucleus="total", time_precision=0):
+    def calculate_particle_signal_spectrum(self, x_bins, t_kyr, scenario_name, energy_bins_gev, depth_mwe, total_simulated_particles=1e5,  target_thickness_mm=0.001, species='mu-', nucleus="total", time_precision=0):
         """
         Calculates the final particle-induced differential track length spectrum (dR/dx) for a given depth.
 
@@ -1121,7 +1093,7 @@ class Paleodetector:
                 overburden_density_g_cm3=1., 
                 steps=None, 
                 total_simulated_particles=1e4, 
-                target_thickness_mm=0.01, 
+                target_thickness_mm=0.001, 
                 x_grid=TRACK_LENGTH_BINS_NM, 
                 species='mu-'):
             """
@@ -1138,7 +1110,7 @@ class Paleodetector:
                 overburden_density_g_cm3 (float, optional): Overburden density in g/cm³. Defaults to 1.
                 steps (int, optional): Number of time steps for integration. Defaults to 75*(number of flux changes in scenario_config).
                 total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.        
-                target_thickness_mm (float, optional): Thickness of the target [mm]. Defaults to 1.
+                target_thickness_mm (float, optional): Thickness of the target [mm]. Defaults to 0.001.
                 x_grid (np.ndarray, optional): The bin edges for the internal track length spectrum [nm]. Defaults to TRACK_LENGTH_BINS_NM.
                 species (str, optional): The particle species to simulate ('mu+', 'mu-', or 'neutron'). Defaults to 'mu-'.
                 
