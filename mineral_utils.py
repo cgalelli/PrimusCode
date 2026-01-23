@@ -418,7 +418,7 @@ class Paleodetector:
         Returns:
             interpolator (np.interp1d): Interpolator of energy vs fluxes in g^-1 s^-1 GeV^-1.
         """
-        an_yield_per_gu_s = 8 * 1.245 * 1e-5 * 1e9 / 1e6
+        an_yield_per_gu_s = self.config["an_coeff_n_nalpha"] * 8 * 1.245 * 1e-5 * 1e9 / 1e6
 
         an_yield_per_g_s = an_yield_per_gu_s * self.config['uranium_concentration_g_g']
 

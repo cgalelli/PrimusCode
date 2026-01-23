@@ -10,6 +10,7 @@ Halite:
   - 1
   uranium_concentration_g_g: 1.0e-09
   density_g_cm3: 2.16
+  an_coeff_n_nalpha: 1
 Olivine:
   name: Olivine
   shortname: Oli
@@ -26,6 +27,7 @@ Olivine:
   - 4
   uranium_concentration_g_g: 1.0e-07
   density_g_cm3: 3.8
+  an_coeff_n_nalpha: 0.1
 Quartz:
   name: Quartz
   shortname: Qz
@@ -38,6 +40,7 @@ Quartz:
   - 2
   uranium_concentration_g_g: 1.0e-06
   density_g_cm3: 2.6
+  an_coeff_n_nalpha: 0.1
 Spinel:
   name: Spinel
   shortname: Spi
@@ -52,3 +55,4 @@ Spinel:
   - 4
   uranium_concentration_g_g: 1.0e-07
   density_g_cm3: 3.7
+  an_coeff_n_nalpha: 0.1
