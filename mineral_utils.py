@@ -263,7 +263,7 @@ class Paleodetector:
         self._flux_interpolators = {}
         self._energy_GeV = {}
         self._depth_interpolators = {}
-        self.secondary_lut = {}
+        self._secondary_n_spectrum = {}
         
         print(f"Initialized Paleodetector: {self.name}")
 
@@ -801,6 +801,80 @@ class Paleodetector:
         self._flux_interpolators[f'{scenario_config["name"]}_{species}'] = interpolators
         self._energy_GeV[f'{scenario_config["name"]}_{species}'] = energies
 
+    def _get_local_neutron_flux(self, target_depth, scenario_name, t_kyr, energy_bins_gev, total_simulated_particles=1e4, species_list=['mu-', 'mu+', 'neutron']):
+        """
+        Computes the local neutron flux at a given depth by processing Geant4 simulation data.
+        Args:
+            target_depth (float): The target depth.
+            scenario_name (str): The name of the flux scenario to use.
+            t_kyr (float): The time in kiloyears for which to compute the flux.
+            energy_bins_gev (np.ndarray): The energy bin edges [GeV].
+            total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.
+            species_list (list, optional): List of particle species to consider. Defaults to ['mu-', 'mu+', 'neutron'].
+        Returns:
+            np.ndarray: The neutron flux at each depth and energy bin.
+        """
+
+        depth_bins = np.linspace(0, target_depth, 51)
+        internal_edges = 0.5 * (energy_bins_gev[:-1] + energy_bins_gev[1:])
+        first_edge = energy_bins_gev[0] - (internal_edges[0] - energy_bins_gev[0])
+        last_edge = energy_bins_gev[-1] + (energy_bins_gev[-1] - internal_edges[-1])
+        edges = np.concatenate(([first_edge], internal_edges, [last_edge]))
+    
+        slice_yield = np.zeros(((len(depth_bins)-1), len(energy_bins_gev)))
+
+        for species in species_list:
+            if not self._flux_interpolators[f'{scenario_name}_{species}']:
+                raise ValueError(f"Flux interpolators not initialized for scenario {scenario_name} and species {species}.")
+
+            flux_val = np.array([interp_func(t_kyr) for interp_func in self._flux_interpolators[f'{scenario_name}_{species}']])
+            flux_interpolator = log_interp1d(self._energy_GeV[f'{scenario_name}_{species}'], flux_val)
+
+            geant4_input_dir = os.path.join(self.data_path, "Geant4_data", f"{self.name}_{species}")
+                
+            initial_flux = flux_interpolator(energy_bins_gev)
+            accumulated_yield = np.zeros(len(edges)-1)
+            counts = np.zeros((len(energy_bins_gev), len(depth_bins)-1, len(edges)-1))
+
+
+            for i, e in enumerate(energy_bins_gev):
+                filepath = os.path.join(geant4_input_dir, f"outNuclei_{e:.6f}.txt")
+                if not os.path.exists(filepath): continue
+                
+                df = pd.read_csv(
+                    filepath, 
+                    sep=r'\s+', 
+                    header=None, 
+                    usecols=[0, 2, 3], 
+                    names=['name', 'rec_e', 'depth'],
+                    dtype={'name': 'category', 'rec_e': 'float32', 'depth': 'float32'},
+                    engine='c'
+                )
+                
+                df_n = df[df['name'] == 'neutron'].copy()
+
+                converted_depths = 100.0 - (df_n['depth'].values * 1e-3)
+                rec_energies_gev = df_n['rec_e'].values * 1e-3
+                H, _, _ = np.histogram2d(
+                    converted_depths, 
+                    rec_energies_gev, 
+                    bins=[depth_bins, edges]
+                )
+                counts[i, :, :] += H / total_simulated_particles
+
+            for k in range(counts.shape[1]):
+
+                current_flux = initial_flux + accumulated_yield
+
+                produced_at_k = current_flux @ counts[:, k, :]
+                
+                accumulated_yield += produced_at_k
+                
+                slice_yield[k] += produced_at_k
+        
+        self._secondary_n_spectrum[f'{target_depth}_{scenario_name}_{t_kyr}_{species_list}'] = slice_yield
+        return slice_yield
+
     def _get_all_fragments(self, energy_names_gev, species='mu-'):
         """
         Dynamically determines the list of all nuclear fragments from Geant4 output files.
@@ -844,7 +918,7 @@ class Paleodetector:
             raise ValueError(f"Flux interpolators not initialized for scenario {scenario_name} and species {species}.")
 
         if not self._depth_interpolators[species]:
-            self._load_depth_interpolators(species)
+            raise ValueError(f"Depth interpolators not initialized for species {species}.")
 
         flux_val = np.array([interp_func(t_kyr) for interp_func in self._flux_interpolators[f'{scenario_name}_{species}']])
 
@@ -955,6 +1029,102 @@ class Paleodetector:
         output_dir = os.path.join(self.data_path, "processed_recoils")
         os.makedirs(output_dir, exist_ok=True)
         output_filepath = os.path.join(output_dir, f"{self.name}_{species}_recoil_{scenario_name}_{t_kyr}kyr_{depth_mwe:.1f}mwe.npz")
+
+        bin_widths_mev = np.diff(RECOIL_ENERGY_BINS_MEV)
+        norm_factor = (bin_widths_mev * target_thickness_mm * self.config['density_g_cm3'] * total_simulated_particles * MYR_PER_SECOND)
+
+        normalized_spectra = {}
+        for name, spectrum in all_recoil_spectra.items():
+            if name == 'neutron':
+                normalized_spectra[name] = np.divide(spectrum, bin_widths_mev*total_simulated_particles, out=np.zeros_like(spectrum), where=norm_factor!=0)
+            else:
+                normalized_spectra[name] = np.divide(spectrum, norm_factor, out=np.zeros_like(spectrum), where=norm_factor!=0)
+
+        np.savez(output_filepath, Er_bins=RECOIL_ENERGY_BINS_MEV, **normalized_spectra)
+        print(f"    - Saved processed data to {output_filepath}")
+
+    def _process_secondary_geant4_data(self, t_kyr, scenario_name, energy_bins_gev, depth_mwe=0., total_simulated_particles=1e4, target_thickness_mm=0.001, secondary_neutrons_species=['mu-', 'mu+', 'neutron']):
+        """
+        Processes raw Geant4 data for secondary neutrons from a given scenario, creating a normalized recoil spectrum file.
+        Args:
+            t_kyr (float): The time in kiloyears for which to process the data.
+            scenario_name (str): The name of the flux scenario to use.
+            energy_bins_gev (np.ndarray): The energy bin edges [GeV].
+            depth_mwe (float, optional): Shielding depth [m.w.e.]. Defaults to 0.
+            total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.
+            target_thickness_mm (float): The thickness of the target [mm].
+            secondary_neutrons_species (list, optional): List of particle species to consider for secondary neutrons. Defaults to ['mu-', 'mu+', 'neutron'].
+        """ 
+
+        if not self._depth_interpolators['neutron']:
+            raise ValueError(f"Depth interpolators not initialized for neutrons.")
+
+        slope = self._depth_interpolators['neutron']['attenuation']
+
+        all_fragments = self._get_all_fragments(energy_bins_gev[:-1], species='neutron')
+
+        geant4_input_dir = os.path.join(self.data_path, "Geant4_data", f"{self.name}_neutron")
+
+        target_depth = depth_mwe / self.config['density_g_cm3']
+
+        slice_yield = self._get_local_neutron_flux(target_depth, scenario_name, t_kyr, energy_bins_gev, species_list=secondary_neutrons_species)
+        all_recoil_spectra = {}
+
+        fragment_spectra = {frag: np.zeros(len(RECOIL_ENERGY_BINS_MEV) - 1) for frag in all_fragments}
+
+        eff_depth_bins = np.linspace(0, target_depth, slice_yield.shape[0]+1) * self.config['density_g_cm3']
+        eff_depth_mids = eff_depth_bins[:-1] + np.diff(eff_depth_bins) / 2
+
+        weight_elastic = 0.0
+
+        for i in range(len(energy_bins_gev) - 1):
+            e_min = energy_bins_gev[i]
+            e_max = energy_bins_gev[i+1]
+
+            N_E = 50
+            N_C = 50 
+            e_vals = np.linspace(e_min, e_max, N_E)
+            c_vals = np.linspace(0.01, 1.0, N_C)
+
+            E_grid, C_grid = np.meshgrid(e_vals, c_vals)
+
+            for j, slice_y in enumerate(slice_yield):
+                eff_depth = depth_mwe - eff_depth_mids[j]
+                z_min_grid = eff_depth/ C_grid
+                target_thickness_mwe = target_thickness_mm * 0.001 * self.config['density_g_cm3']
+                z_max_grid = z_min_grid + target_thickness_mwe / C_grid
+                lambda_grid = slope(E_grid) 
+                prob_attenuation_grid = np.exp(-z_min_grid / lambda_grid) - np.exp(-z_max_grid / lambda_grid)
+                weight_elastic += np.diff(eff_depth_bins)[j] * slice_y[i] * np.trapezoid(np.trapezoid(prob_attenuation_grid, e_vals, axis=1), c_vals)
+
+            filepath = os.path.join(geant4_input_dir, f"outNuclei_{e_min:.6f}.txt")
+            if not os.path.exists(filepath): continue
+
+            try:
+                df = pd.read_csv(filepath, sep=r'\s+', header=None, usecols=[0, 2], 
+                                names=['name', 'rec_e'], dtype={'name': str, 'rec_e': float})
+                names = df['name'].values
+                rec_energies = df['rec_e'].values
+            except pd.errors.EmptyDataError:
+                continue
+
+            valid_mask = np.isin(names, list(fragment_spectra.keys()))
+            valid_names = names[valid_mask]
+            valid_rec = rec_energies[valid_mask]
+
+            unique_frags = np.unique(valid_names)
+
+            for frag in unique_frags:
+                frag_mask = (valid_names == frag)
+                frag_rec_energies = valid_rec[frag_mask]
+
+                counts, _ = np.histogram(frag_rec_energies, bins=RECOIL_ENERGY_BINS_MEV)
+                fragment_spectra[frag] += counts * weight_elastic
+        all_recoil_spectra.update(fragment_spectra)
+
+        output_dir = os.path.join(self.data_path, "processed_recoils")
+        os.makedirs(output_dir, exist_ok=True)
+        output_filepath = os.path.join(output_dir, f"{self.name}_secondary_neutrons_recoil_{scenario_name}_{t_kyr}kyr_{depth_mwe:.1f}mwe.npz")
 
         bin_widths_mev = np.diff(RECOIL_ENERGY_BINS_MEV)
         norm_factor = (bin_widths_mev * target_thickness_mm * self.config['density_g_cm3'] * total_simulated_particles * MYR_PER_SECOND)
