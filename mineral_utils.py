@@ -1353,3 +1353,62 @@ class Paleodetector:
             total_tracks = cdf_interp(x_bins[1:]) - cdf_interp(x_bins[:-1])
 
             return total_tracks
+
+    def integrate_all_particles(self, 
+                x_bins, 
+                scenario_config, 
+                energy_bins_gev, 
+                exposure_window_kyr, 
+                sample_mass_kg, 
+                initial_depth=0, 
+                deposition_rate_m_kyr=0, 
+                overburden_density_g_cm3=1., 
+                steps=None, 
+                total_simulated_particles=1e4, 
+                target_thickness_mm=0.001, 
+                species_list=['mu-', 'mu+', 'neutron', 'secondary_neutron']):
+            """
+            Calculates the final particle-induced track length spectrum by integrating contributions from multiple species.
+
+            Args:
+                x_bins (np.ndarray): The bin edges for the output track length spectrum [nm].
+                scenario_config (dict): Configuration dictionary for the flux scenario.
+                energy_bins_gev (np.ndarray): The energy bin edges [GeV].
+                exposure_window_kyr (float): The total exposure time in kiloyears.
+                sample_mass_kg (float): The mass of the sample in kilograms.
+                initial_depth (float, optional): Initial depth in meters water equivalent [m.w.e.]. Defaults to 0.
+                deposition_rate_m_kyr (float, optional): Deposition rate in meters per kiloyear. Defaults to 0.
+                overburden_density_g_cm3 (float, optional): Overburden density in g/cm³. Defaults to 1.
+                steps (int, optional): Number of time steps for integration. Defaults to 75*(number of flux changes in scenario_config).
+                total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.
+                target_thickness_mm (float, optional): Thickness of the target [mm]. Defaults to 0.001.
+                species_list (list, optional): List of particle species to consider. Defaults to ['mu-', 'mu+', 'neutron', 'secondary_neutron'].
+            Returns:
+                dict: A dictionary with keys being the species names and values being the total number of tracks expected in each track length bin from that species.
+            """
+
+            total_tracks_by_species = {}
+
+            for species in species_list:
+                print(f"Processing species: {species}")
+                total_tracks = self.integrate_particle_signal_spectrum_parallel(
+                    x_bins, 
+                    scenario_config, 
+                    energy_bins_gev, 
+                    exposure_window_kyr, 
+                    sample_mass_kg, 
+                    initial_depth, 
+                    deposition_rate_m_kyr, 
+                    overburden_density_g_cm3, 
+                    steps, 
+                    total_simulated_particles, 
+                    target_thickness_mm, 
+                    species
+                )
+                total_tracks_by_species[species] = total_tracks
+                total_tracks_all = total_tracks_all + total_tracks if 'total_tracks_all' in locals() else total_tracks
+
+            total_tracks_by_species['total'] = total_tracks_all
+
+            return total_tracks_by_species
+
