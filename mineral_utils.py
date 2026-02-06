@@ -497,9 +497,9 @@ class Paleodetector:
         bin_widths_mev = np.diff(RECOIL_ENERGY_BINS_MEV)
         norm_factor = (bin_widths_mev * total_simulated_particles * MYR_PER_SECOND * 1e-3)
 
-        output_dir = os.path.join(self.data_path, "processed_recoils")
+        output_dir = os.path.join(self.data_path, "processed_recoils", self.name)
         os.makedirs(output_dir, exist_ok=True)
-        output_filepath = os.path.join(output_dir, f"{self.name}_{background_type}.npz")
+        output_filepath = os.path.join(output_dir, f"{background_type}.npz")
 
         normalized_spectra = {}
         for name, spectrum in all_recoil_spectra.items():
@@ -528,7 +528,7 @@ class Paleodetector:
         sum_drdx = np.zeros_like(x_mids)
 
         for background_type in background_types:
-            filepath = os.path.join(self.data_path, "processed_recoils", f"{self.name}_{background_type}.npz")
+            filepath = os.path.join(self.data_path, "processed_recoils", self.name, f"{background_type}.npz")
             if not os.path.exists(filepath):
                 self._process_background_neutron_geant4_data(background_type, energy_bins_gev, total_simulated_particles)
 
@@ -1049,9 +1049,9 @@ class Paleodetector:
                     fragment_spectra[frag] += counts * weight_elastic
         all_recoil_spectra.update(fragment_spectra)
 
-        output_dir = os.path.join(self.data_path, "processed_recoils")
+        output_dir = os.path.join(self.data_path, "processed_recoils", self.name, species)
         os.makedirs(output_dir, exist_ok=True)
-        output_filepath = os.path.join(output_dir, f"{self.name}_{species}_recoil_{scenario_name}_{t_kyr}kyr_{depth_mwe:.1f}mwe.npz")
+        output_filepath = os.path.join(output_dir, f'{scenario_name}_{t_kyr}kyr_{depth_mwe:.1f}mwe.npz')
 
         bin_widths_mev = np.diff(RECOIL_ENERGY_BINS_MEV)
         norm_factor = (bin_widths_mev * target_thickness_mm * self.config['density_g_cm3'] * total_simulated_particles * MYR_PER_SECOND)
@@ -1145,9 +1145,9 @@ class Paleodetector:
                 fragment_spectra[frag] += counts * weight_elastic
         all_recoil_spectra.update(fragment_spectra)
 
-        output_dir = os.path.join(self.data_path, "processed_recoils")
+        output_dir = os.path.join(self.data_path, "processed_recoils", self.name, 'secondary_neutron')
         os.makedirs(output_dir, exist_ok=True)
-        output_filepath = os.path.join(output_dir, f"{self.name}_secondary_neutron_recoil_{scenario_name}_{t_kyr}kyr_{depth_mwe:.1f}mwe.npz")
+        output_filepath = os.path.join(output_dir, f"{scenario_name}_{t_kyr}kyr_{depth_mwe:.1f}mwe.npz")
 
         bin_widths_mev = np.diff(RECOIL_ENERGY_BINS_MEV)
         norm_factor = (bin_widths_mev * target_thickness_mm * self.config['density_g_cm3'] * total_simulated_particles * MYR_PER_SECOND)
@@ -1186,6 +1186,7 @@ class Paleodetector:
         dRdx_by_nucleus = {}
 
         dRdx_total = np.zeros(len(x_bins) - 1)
+
         x_mid_nm = x_bins[:-1] + np.diff(x_bins) / 2.0
         
         for nuclide_name in all_fragments:
@@ -1237,7 +1238,7 @@ class Paleodetector:
         """
         t_kyr = round(t_kyr, time_precision)
 
-        filepath = os.path.join(self.data_path, "processed_recoils", f"{self.name}_{species}_recoil_{scenario_name}_{t_kyr}kyr_{depth_mwe:.1f}mwe.npz")
+        filepath = os.path.join(self.data_path, "processed_recoils", self.name, species, f'{scenario_name}_{t_kyr}kyr_{depth_mwe:.1f}mwe.npz')
         if not os.path.exists(filepath):
             if species == 'secondary_neutron':
                 self._process_secondary_geant4_data(t_kyr, scenario_name, energy_bins_gev, depth_mwe, total_simulated_particles, target_thickness_mm, secondary_neutrons_species=['mu-', 'mu+', 'neutron'])
@@ -1316,8 +1317,8 @@ class Paleodetector:
             """
 
             if species == 'secondary_neutron':
-                for species in ['mu-', 'mu+', 'neutron']:
-                    self._interpolate_flux_scenarios(scenario_config, species)
+                for t_species in ['mu-', 'mu+', 'neutron']:
+                    self._interpolate_flux_scenarios(scenario_config, t_species)
                 self._load_depth_interpolators('neutron')
             else:
                 self._interpolate_flux_scenarios(scenario_config, species)
@@ -1392,18 +1393,18 @@ class Paleodetector:
             for species in species_list:
                 print(f"Processing species: {species}")
                 total_tracks = self.integrate_particle_signal_spectrum_parallel(
-                    x_bins, 
-                    scenario_config, 
-                    energy_bins_gev, 
-                    exposure_window_kyr, 
-                    sample_mass_kg, 
-                    initial_depth, 
-                    deposition_rate_m_kyr, 
-                    overburden_density_g_cm3, 
-                    steps, 
-                    total_simulated_particles, 
-                    target_thickness_mm, 
-                    species
+                    x_bins=x_bins, 
+                    scenario_config=scenario_config, 
+                    energy_bins_gev=energy_bins_gev, 
+                    exposure_window_kyr=exposure_window_kyr, 
+                    sample_mass_kg=sample_mass_kg, 
+                    initial_depth=initial_depth, 
+                    deposition_rate_m_kyr=deposition_rate_m_kyr, 
+                    overburden_density_g_cm3=overburden_density_g_cm3, 
+                    steps=steps, 
+                    total_simulated_particles=total_simulated_particles, 
+                    target_thickness_mm=target_thickness_mm, 
+                    species=species
                 )
                 total_tracks_by_species[species] = total_tracks
                 total_tracks_all = total_tracks_all + total_tracks if 'total_tracks_all' in locals() else total_tracks
