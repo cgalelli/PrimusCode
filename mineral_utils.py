@@ -25,6 +25,8 @@ LENGTH_MIN_LOG_NM = 1.5
 LENGTH_MAX_LOG_NM = 5.5
 TRACK_LENGTH_BINS_NM = np.logspace(LENGTH_MIN_LOG_NM, LENGTH_MAX_LOG_NM, LENGTH_N_BINS)
 
+TYPICAL_DEPTH_MM = 0.001
+
 # --- Utility Functions ---
 def log_interp1d(xx, yy, kind='linear'):
     """
@@ -120,7 +122,7 @@ def calibrate_spectrum(x_bins, counts, x_scale_factor=1.0, y_scale_factor=1.0):
 
     return calibrated_y*y_scale_factor
 
-def slice_spectrum(x_bins, counts, angular_pdf=None, phi_cut_deg=0., l_min_measurable=300., l_max_measurable=50000., pit_width=500., bulk_etching_depth=1000., f_phi= lambda phi: 1., n_samples=1e6, correction=True):
+def slice_spectrum(x_bins, counts, angular_pdf=None, phi_cut_deg=0., l_min_measurable=300., l_max_measurable=50000., pit_width=500., bulk_etching_depth=TYPICAL_DEPTH_MM*1.e6, f_phi= lambda phi: 1., n_samples=1e6, correction=True, factor=10):
     """
     Applies Monte Carlo simulation of track slicing, accounting for geometrical, angular, 
     and experimental filtering effects (min/max measurable length).
@@ -138,22 +140,22 @@ def slice_spectrum(x_bins, counts, angular_pdf=None, phi_cut_deg=0., l_min_measu
                                     the pit size due to saturation effects in the etching process.
         pit_width (float): Typical width of the etched pit [nm]. 
                             Tracks with parallel footprint smaller than this threshold will be measured by this.
-        bulk_etching_depth (float): Minimum vertical development of the track [nm]. 
-                                    Tracks shallower than this are lost due to etching away.
+        bulk_etching_depth (float): Vertical development of the etching [nm]. 
         f_phi (callable): Function applied to the segment length L_seg * f_phi(phi). Corrects 
                             for anisotropic enlargement (e.g., set to lambda phi: 1.0 for plasma etching).
         n_samples (int): Number of Monte Carlo tracks to simulate for accurate statistics.
         correction (bool): If True, applies pit_width correction. If not, the pit_width correction is ignored.
-
+        factor (int): Number of slices to consider above and below the target.  
     Returns:
         np.ndarray: The resulting measured track count histogram N(L_meas), normalized to 
                     the total input counts.
     """
+
     x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
     phi_cut_rad = np.deg2rad(phi_cut_deg)
 
     samples = np.random.choice(x_mids, size=int(n_samples), p=counts/np.sum(counts))
-    
+
     phi_grid = np.linspace(0, np.pi / 2, 1000)
 
     if not angular_pdf:
@@ -166,29 +168,52 @@ def slice_spectrum(x_bins, counts, angular_pdf=None, phi_cut_deg=0., l_min_measu
     samples_retained = samples[is_retained]
     phi_retained = sampled_angles[is_retained]
 
-    seg_samples = np.random.uniform(low=0., high=samples_retained)
+    sim_start_point = np.random.uniform(low = -factor*bulk_etching_depth, high = factor*bulk_etching_depth, size=len(samples_retained))
 
-    measured_samples = seg_samples * f_phi(phi_retained)
+    sim_end_point = sim_start_point + (samples_retained * np.sin(phi_retained))
+
+    valid = (sim_end_point > 0.) & (sim_start_point < bulk_etching_depth)
+
+    angles_valid = phi_retained[valid]
+    cut_sim_true_depth = sim_end_point[valid]
+    cut_sim_start_depth = np.clip(sim_start_point[valid], a_min=0., a_max=np.inf)
+
+    depth = (cut_sim_true_depth - bulk_etching_depth)/np.sin(angles_valid) - cut_sim_start_depth
+
+    measured_samples = depth*f_phi(angles_valid)
 
     is_retained_length = measured_samples >= l_min_measurable
 
     measurable_samples = measured_samples[is_retained_length]
-    measurable_angles = phi_retained[is_retained_length]
-
-    is_retained_depth = measurable_samples * np.sin(measurable_angles) >= bulk_etching_depth
+    measurable_angles = angles_valid[is_retained_length]
 
     if correction:
-        corrected_measurable_samples = np.where(measurable_samples[is_retained_depth] * np.cos(measurable_angles[is_retained_depth]) >= pit_width/2., (pit_width/2.)+measurable_samples[is_retained_depth] * np.cos(measurable_angles[is_retained_depth]), pit_width)
+        corrected_measurable_samples = np.where(measurable_samples * np.cos(measurable_angles) >= pit_width/2., (pit_width/2.)+measurable_samples * np.cos(measurable_angles), pit_width)
     else:
-        corrected_measurable_samples = measurable_samples[is_retained_depth]
+        corrected_measurable_samples = measurable_samples
 
     final_measured_samples = np.minimum(corrected_measurable_samples, l_max_measurable)
 
     hist_measured, _ = np.histogram(final_measured_samples, bins=x_bins, density=False)
 
-    hist_norm = hist_measured * (np.sum(counts) / n_samples)
+    hist_norm = hist_measured * (np.sum(counts)*factor / n_samples)
 
     return hist_norm
+
+def slice_and_etch_spectrum(x_bins, counts, angular_pdf=None, phi_cut_deg=0., l_min_measurable=300., l_max_measurable=50000., pit_width=500., bulk_etching_depth=1000., f_phi= lambda phi: 1., n_samples=1e6):
+    """
+    Combines the slicing and etching processes into a single function for efficiency.
+
+    This function applies the same Monte Carlo simulation as `slice_spectrum` but includes
+    the pit width correction directly in the calculation of the measured track lengths.
+
+    Args:
+        x_bins (np.ndarray): The bin edges for the true track length spectrum R [nm].
+        counts (np.ndarray): The array of true track counts N(R) in each bin.
+        angular_pdf (np.ndarray, optional): Normalized array P(phi) for the angle distribution
+    """
+
+
 
 def detection_model_efficiency(x_bins, counts, precision, recall, model_mean, sigma_left, sigma_right=None, meas_error=1000.):
     """
@@ -923,7 +948,7 @@ class Paleodetector:
                         all_fragments.add(name)
         return sorted(list(all_fragments))
 
-    def _process_geant4_data(self, t_kyr, scenario_name, energy_bins_gev, depth_mwe=0., total_simulated_particles=1e4, target_thickness_mm=0.001, species='mu-'):
+    def _process_geant4_data(self, t_kyr, scenario_name, energy_bins_gev, depth_mwe=0., total_simulated_particles=1e4, target_thickness_mm=TYPICAL_DEPTH_MM, species='mu-'):
         """
         Processes raw Geant4 data for a given scenario, creating a normalized recoil spectrum file.
 
@@ -1066,7 +1091,7 @@ class Paleodetector:
         np.savez(output_filepath, Er_bins=RECOIL_ENERGY_BINS_MEV, **normalized_spectra)
         print(f"    - Saved processed data to {output_filepath}")
 
-    def _process_secondary_geant4_data(self, t_kyr, scenario_name, energy_bins_gev, depth_mwe=0., total_simulated_particles=1e4, target_thickness_mm=0.001, secondary_neutrons_species=['mu-', 'mu+', 'neutron']):
+    def _process_secondary_geant4_data(self, t_kyr, scenario_name, energy_bins_gev, depth_mwe=0., total_simulated_particles=1e4, target_thickness_mm=TYPICAL_DEPTH_MM, secondary_neutrons_species=['mu-', 'mu+', 'neutron']):
         """
         Processes raw Geant4 data for secondary neutrons from a given scenario, creating a normalized recoil spectrum file.
         Args:
@@ -1216,7 +1241,7 @@ class Paleodetector:
         
         return dRdx_by_nucleus
 
-    def calculate_particle_signal_spectrum(self, x_bins, t_kyr, scenario_name, energy_bins_gev, depth_mwe, total_simulated_particles=1e4,  target_thickness_mm=0.001, species='mu-', nucleus="total", time_precision=0):
+    def calculate_particle_signal_spectrum(self, x_bins, t_kyr, scenario_name, energy_bins_gev, depth_mwe, total_simulated_particles=1e4,  target_thickness_mm=TYPICAL_DEPTH_MM, species='mu-', nucleus="total", time_precision=0):
         """
         Calculates the final particle-induced differential track length spectrum (dR/dx) for a given depth.
 
@@ -1291,7 +1316,7 @@ class Paleodetector:
                 overburden_density_g_cm3=1., 
                 steps=None, 
                 total_simulated_particles=1e4, 
-                target_thickness_mm=0.001, 
+                target_thickness_mm=TYPICAL_DEPTH_MM, 
                 x_grid=TRACK_LENGTH_BINS_NM, 
                 species='mu-'):
             """
@@ -1366,7 +1391,7 @@ class Paleodetector:
                 overburden_density_g_cm3=1., 
                 steps=None, 
                 total_simulated_particles=1e4, 
-                target_thickness_mm=0.001, 
+                target_thickness_mm=TYPICAL_DEPTH_MM, 
                 species_list=['mu-', 'mu+', 'neutron', 'secondary_neutron']):
             """
             Calculates the final particle-induced track length spectrum by integrating contributions from multiple species.
