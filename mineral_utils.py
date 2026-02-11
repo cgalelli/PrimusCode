@@ -200,21 +200,6 @@ def slice_spectrum(x_bins, counts, angular_pdf=None, phi_cut_deg=0., l_min_measu
 
     return hist_norm
 
-def slice_and_etch_spectrum(x_bins, counts, angular_pdf=None, phi_cut_deg=0., l_min_measurable=300., l_max_measurable=50000., pit_width=500., bulk_etching_depth=1000., f_phi= lambda phi: 1., n_samples=1e6):
-    """
-    Combines the slicing and etching processes into a single function for efficiency.
-
-    This function applies the same Monte Carlo simulation as `slice_spectrum` but includes
-    the pit width correction directly in the calculation of the measured track lengths.
-
-    Args:
-        x_bins (np.ndarray): The bin edges for the true track length spectrum R [nm].
-        counts (np.ndarray): The array of true track counts N(R) in each bin.
-        angular_pdf (np.ndarray, optional): Normalized array P(phi) for the angle distribution
-    """
-
-
-
 def detection_model_efficiency(x_bins, counts, precision, recall, model_mean, sigma_left, sigma_right=None, meas_error=1000.):
     """
     Multiplies counts (sliced) with the efficiency function for the detection model
