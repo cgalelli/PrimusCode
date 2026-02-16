@@ -196,7 +196,7 @@ def slice_spectrum(x_bins, counts, angular_pdf=None, phi_cut_deg=0., l_min_measu
 
     hist_measured, _ = np.histogram(final_measured_samples, bins=x_bins, density=False)
 
-    hist_norm = hist_measured * (np.sum(counts)*factor / n_samples)
+    hist_norm = hist_measured * (np.sum(counts)*1.9 / (n_samples))
 
     return hist_norm
 
