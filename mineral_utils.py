@@ -262,6 +262,8 @@ class Paleodetector:
         self.composition = mineral_config['composition']
         self.data_path = data_path_prefix
 
+        self.verbose = 1
+
         self.radiogenic_spectrum = self._radiogenic_spectrum()
         
         self.alpha_n_spectrum = self._alpha_n_spectrum()
@@ -274,7 +276,8 @@ class Paleodetector:
         self._depth_interpolators = {}
         self._secondary_n_spectrum = {}
         
-        print(f"Initialized Paleodetector: {self.name}")
+        if self.verbose>0:
+            print(f"Initialized Paleodetector: {self.name}")
 
     def _load_nuclear_data(self, filename):
         """
@@ -333,7 +336,9 @@ class Paleodetector:
         if os.path.exists(processed_srim_filepath):
             e_kev, dee_dx, den_dx, length_um = np.loadtxt(processed_srim_filepath, skiprows=1, unpack=True)
         else:
-            print(f"Pre-processed SRIM data for {ion_symbol} (Z={ion_z}) not found. Processing raw file.")
+            if self.verbose>0:
+                print(f"Pre-processed SRIM data for {ion_symbol} (Z={ion_z}) not found.")
+
             e_kev, dee_dx, den_dx, length_um = self._process_raw_srim_data(raw_srim_filepath)
             if e_kev is not None and length_um is not None:
                 np.savetxt(processed_srim_filepath, np.column_stack((e_kev, dee_dx, den_dx, length_um)), header="Energy(keV)    dEe/dx(keV/micro_m)  dEn/dx(keV/micro_m)  x(micro_m)", fmt="%.6e")
@@ -516,7 +521,8 @@ class Paleodetector:
             normalized_spectra[name] = np.divide(spectrum, norm_factor, out=np.zeros_like(spectrum), where=norm_factor!=0)
 
         np.savez(output_filepath, Er_bins=RECOIL_ENERGY_BINS_MEV, **normalized_spectra)
-        print(f"    - Saved processed data to {output_filepath}")
+        if self.verbose>1:
+            print(f"    - Saved processed data to {output_filepath}")
         
     def calculate_background_neutron_spectrum(self, 
         x_bins, 
@@ -603,7 +609,8 @@ class Paleodetector:
         Returns:
             np.ndarray: The differential track rate (dR/dx) [events/kg/Myr/nm].
         """
-        print(f"Calculating neutrino background for source: {flux_name}...")
+        if self.verbose>0:
+            print(f"Calculating neutrino background for source: {flux_name}...")
         try:        
             from WIMpy import DMUtils as DMU
         except ImportError as e:
@@ -655,7 +662,8 @@ class Paleodetector:
         Returns:
             np.ndarray: The differential track rate (dR/dx) [events/kg/Myr/nm].
         """
-        print("Calculating spontaneous fission background...")
+        if self.verbose>0:
+            print("Calculating spontaneous fission background...")
         
         Z_fission, A_fission, _ = self._load_nuclear_data("U238.dat")
         Z_bind, A_bind, B_bind = self._load_nuclear_data("BindingEne.txt")
@@ -736,7 +744,7 @@ class Paleodetector:
 
             filepath = os.path.join(self.data_path, "Geant4_data", f"StdRock_{tab_species}", f"outNuclei_{energy_name:.6f}.txt")
             if not os.path.exists(filepath):
-                print(f"Geant4 data file not found: {filepath}")
+                print(f"Warning: Geant4 data file not found: {filepath}")
                 continue
 
             energies, depth, rem_energy = np.loadtxt(filepath, usecols=(2, 3, 5), dtype = str, unpack=True)
@@ -801,7 +809,7 @@ class Paleodetector:
             _, filename_tag = scenario[1]
             flux_filepath = os.path.join(self.data_path, "flux_data", f"{filename_tag}.txt")
             if not os.path.exists(flux_filepath):
-                print(f"Flux file not found: {flux_filepath}")
+                print(f"Warning: Flux file not found: {flux_filepath}")
                 continue
             
             energies, flux = np.loadtxt(flux_filepath, usecols=(0, col), unpack=True)
@@ -1074,7 +1082,8 @@ class Paleodetector:
                 normalized_spectra[name] = np.divide(spectrum, norm_factor, out=np.zeros_like(spectrum), where=norm_factor!=0)
 
         np.savez(output_filepath, Er_bins=RECOIL_ENERGY_BINS_MEV, **normalized_spectra)
-        print(f"    - Saved processed data to {output_filepath}")
+        if self.verbose>1:
+            print(f"    - Saved processed data to {output_filepath}")
 
     def _process_secondary_geant4_data(self, t_kyr, scenario_name, energy_bins_gev, depth_mwe=0., total_simulated_particles=1e4, target_thickness_mm=TYPICAL_DEPTH_MM, secondary_neutrons_species=['mu-', 'mu+', 'neutron']):
         """
@@ -1170,7 +1179,8 @@ class Paleodetector:
                 normalized_spectra[name] = np.divide(spectrum, norm_factor, out=np.zeros_like(spectrum), where=norm_factor!=0)
 
         np.savez(output_filepath, Er_bins=RECOIL_ENERGY_BINS_MEV, **normalized_spectra)
-        print(f"    - Saved processed data to {output_filepath}")
+        if self.verbose>1:
+            print(f"    - Saved processed data to {output_filepath}")
 
     def _convert_recoil_to_track_spectrum(self, x_bins, recoil_data, energy_bins_gev, species='mu-'):
         """
@@ -1334,7 +1344,8 @@ class Paleodetector:
                 self._interpolate_flux_scenarios(scenario_config, species)
                 self._load_depth_interpolators(species)
 
-            print(f"Integrating the signal in a {target_thickness_mm} mm slice of {self.name} with mass {sample_mass_kg*1e3} g, corresponding to {sample_mass_kg*1e3/(target_thickness_mm*0.1*self.config['density_g_cm3'])} cm2")
+            if self.verbose>0:
+                print(f"Integrating the signal in a {target_thickness_mm} mm slice of {self.name} with mass {sample_mass_kg*1e3} g, corresponding to {sample_mass_kg*1e3/(target_thickness_mm*0.1*self.config['density_g_cm3'])} cm2")
 
             if isinstance(steps, np.ndarray):
                 t_kyr_array = steps
@@ -1401,7 +1412,8 @@ class Paleodetector:
             total_tracks_by_species = {}
 
             for species in species_list:
-                print(f"Processing species: {species}")
+                if self.verbose>1:
+                    print(f"Processing species: {species}")
                 total_tracks = self.integrate_particle_signal_spectrum_parallel(
                     x_bins=x_bins, 
                     scenario_config=scenario_config, 
