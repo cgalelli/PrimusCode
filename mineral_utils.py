@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import os
-from scipy.interpolate import interp1d, InterpolatedUnivariateSpline
+from scipy.interpolate import interp1d
 from scipy.integrate import quad
 from scipy.special import erf
 from mendeleev import element
@@ -354,7 +354,7 @@ class Paleodetector:
             print(f"Error: Not enough unique data points for interpolation for Z={ion_z}. Skipping.")
             return None, None, None, None, None
 
-        e_to_x_func = InterpolatedUnivariateSpline(unique_e, unique_length, k=1)
+        e_to_x_func = interp1d(unique_e, unique_length, bounds_error=False, fill_value=0.0)
         self._srim_cache[ion_z] = (e_to_x_func, unique_e, dee_dx[unique_indices], den_dx[unique_indices], unique_length)
         return e_to_x_func, unique_e, dee_dx[unique_indices], den_dx[unique_indices], unique_length
     
@@ -381,10 +381,10 @@ class Paleodetector:
                 x = x.decode()
             return float(x.replace(',', '.'))
 
-        data = np.genfromtxt(raw_srim_filepath, usecols=(0, 2, 3, 4, 6, 8), unpack=True, skip_header=26, skip_footer=13, converters={0: comma_to_dot, 2: comma_to_dot, 3: comma_to_dot, 4: comma_to_dot, 6: comma_to_dot, 8: comma_to_dot})
+        data = np.genfromtxt(raw_srim_filepath, usecols=(0, 2, 3, 4, 6, 8), unpack=True, skip_header=(22+len(self.config['composition'].split('-'))), skip_footer=13, converters={0: comma_to_dot, 2: comma_to_dot, 3: comma_to_dot, 4: comma_to_dot, 6: comma_to_dot, 8: comma_to_dot})
 
         e_raw, dee_dx, den_dx, x_raw, y_raw, z_raw = data
-        unit_e, unit_x = np.genfromtxt(raw_srim_filepath, dtype=str, skip_header=26, skip_footer=13, usecols=(1, 5), unpack=True)
+        unit_e, unit_x = np.genfromtxt(raw_srim_filepath, dtype=str, skip_header=(22+len(self.config['composition'].split('-'))), skip_footer=13, usecols=(1, 5), unpack=True)
 
         e_kev = np.zeros_like(e_raw)
         for j, unit in enumerate(unit_e):
@@ -630,8 +630,8 @@ class Paleodetector:
 
                 sorted_indices = np.argsort(x)
             
-                x_to_e_func = InterpolatedUnivariateSpline(x[sorted_indices]*1e3, e[sorted_indices], k=1)
-                x_to_dedx_func = InterpolatedUnivariateSpline(x[sorted_indices]*1e3, (dee_dx[sorted_indices]+den_dx[sorted_indices])*1e-3, k=1)
+                x_to_e_func = interp1d(x[sorted_indices]*1e3, e[sorted_indices], bounds_error=False, fill_value=0.0)
+                x_to_dedx_func = interp1d(x[sorted_indices]*1e3, (dee_dx[sorted_indices]+den_dx[sorted_indices])*1e-3, bounds_error=False, fill_value=0.0)
 
                 dRdE_kev = np.vectorize(DMU.dRdE_CEvNS)(x_to_e_func(x_mid), element(nuc_name).protons, element(nuc_name).neutrons, flux_name=flux_name)
 
@@ -1223,8 +1223,8 @@ class Paleodetector:
 
             sorted_indices = np.argsort(x)
             
-            x_to_e_func = InterpolatedUnivariateSpline(x[sorted_indices]*1e3, e[sorted_indices]*1e-3, k=1)
-            x_to_dedx_func = InterpolatedUnivariateSpline(x[sorted_indices]*1e3, (dee_dx[sorted_indices]+den_dx[sorted_indices])*1e-6, k=1)
+            x_to_e_func = interp1d(x[sorted_indices]*1e3, e[sorted_indices]*1e-3, bounds_error=False, fill_value=0.0)
+            x_to_dedx_func = interp1d(x[sorted_indices]*1e3, (dee_dx[sorted_indices]+den_dx[sorted_indices])*1e-6, bounds_error=False, fill_value=0.0)
             
             e_at_x = x_to_e_func(x_mid_nm)
             
