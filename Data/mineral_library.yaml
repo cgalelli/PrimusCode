@@ -56,3 +56,24 @@ Spinel:
   uranium_concentration_g_g: 1.0e-07
   density_g_cm3: 3.7
   an_coeff_n_nalpha: 0.1
+Spinel:
+  name: Apatite
+  shortname: Apa
+  composition: Ca- P- O- F-Cl- O- H
+  nuclei:
+  - Ca
+  - P
+  - O
+  - F
+  - Cl
+  - H
+  stoich:
+  - 5
+  - 3
+  - 12.025
+  - 0.9
+  - 0.05
+  - 0.025
+  uranium_concentration_g_g: 1.0e-05
+  density_g_cm3: 3.15
+  an_coeff_n_nalpha: 1.33

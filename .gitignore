@@ -1,8 +1,6 @@
 Data/processed_recoils/*
 Plots/*
 Data/images/*
-.ipynb_checkpoints
-_pycache_/
-*.pyc
-Primus_analysis.ipynb
+!Data/images/*.ipynb
 Data/Geant4_data/build/*
+Primus_analysis.ipynb
