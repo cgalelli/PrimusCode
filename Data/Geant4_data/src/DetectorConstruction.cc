@@ -49,19 +49,31 @@ void DetectorConstruction::DefineMaterials()
   fWorldMaterial = nist->FindOrBuildMaterial("G4_Galactic");
 
   // --- HALITE (NaCl) ---
-  // Density ~2.16 g/cm3
   G4Material* Halite = new G4Material("Halite", 2.16*CLHEP::g/CLHEP::cm3, 2);
   Halite->AddElement(Na, 0.5);
   Halite->AddElement(Cl, 0.5);
 
-  // --- OLIVINE ((Mg,Fe)2SiO4) ---
-  // Typical mantle xenolith composition: approx (Mg0.9 Fe0.1)2 SiO4
-  // We define a generic Olivine with density ~3.32 g/cm3
-  G4Material* Olivine = new G4Material("Olivine", 3.32*CLHEP::g/CLHEP::cm3, 4);
+  // --- OLIVINE Fo90 ((Mg,Fe)2SiO4) ---
+  G4Material* Olivine = new G4Material("Olivine", 3.3*CLHEP::g/CLHEP::cm3, 4);
   Olivine->AddElement(Mg, 0.257); // Mg_1.8
   Olivine->AddElement(Fe, 0.029); // Fe_0.2
-  Olivine->AddElement(Si, 0.571);
-  Olivine->AddElement(O, 0.143);
+  Olivine->AddElement(Si, 0.143);
+  Olivine->AddElement(O, 0.571);
+
+ // --- ORTHOPYROXENE (90% Enstatite)((Mg,Fe)2Si2O6) ---
+  G4Material* Orthopiroxene = new G4Material("Orthopiroxene", 3.25*CLHEP::g/CLHEP::cm3, 4);
+  Orthopiroxene->AddElement(Mg, 0.18); // Mg_1.8
+  Orthopiroxene->AddElement(Fe, 0.02); // Fe_0.2
+  Orthopiroxene->AddElement(Si, 0.2);
+  Orthopiroxene->AddElement(O, 0.6);
+
+ // --- CLINOPYROXENE (90% Diopside)(Ca(Mg,Fe)Si2O6) ---
+  G4Material* Clinopiroxene = new G4Material("Clinopiroxene", 3.4*CLHEP::g/CLHEP::cm3, 5);
+  Clinopiroxene->AddElement(Ca, 0.1); 
+  Clinopiroxene->AddElement(Mg, 0.09); // Mg_0.9
+  Clinopiroxene->AddElement(Fe, 0.01); // Fe_0.1
+  Clinopiroxene->AddElement(Si, 0.2);
+  Clinopiroxene->AddElement(O, 0.6);
 
   G4Material* StdRock = new G4Material("StdRock",2.65*CLHEP::g/CLHEP::cm3,4, kStateSolid );
   StdRock->AddElement(O,  52.*perCent);
