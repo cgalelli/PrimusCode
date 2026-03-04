@@ -554,7 +554,7 @@ class Paleodetector:
 
             sum_drdx += drdx['total']
 
-        return sum_drdx
+        return np.asarray(sum_drdx)
 
     def integrate_background_neutron_spectrum(
         self, 
@@ -707,7 +707,7 @@ class Paleodetector:
         
         dRdx = (counts / num_events) * fission_rate_factor / bin_widths
         
-        return dRdx
+        return np.asarray(dRdx)
     
     def integrate_fission_spectrum(self, x_bins, age, sample_mass, x_grid=TRACK_LENGTH_BINS_NM):
 
