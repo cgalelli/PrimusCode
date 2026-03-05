@@ -354,7 +354,7 @@ class Paleodetector:
             print(f"Error: Not enough unique data points for interpolation for Z={ion_z}. Skipping.")
             return None, None, None, None, None
 
-        e_to_x_func = interp1d(unique_e, unique_length, bounds_error=False, fill_value=0.0)
+        e_to_x_func = interp1d(unique_e, unique_length, bounds_error=False, fill_value="extrapolate")
         self._srim_cache[ion_z] = (e_to_x_func, unique_e, dee_dx[unique_indices], den_dx[unique_indices], unique_length)
         return e_to_x_func, unique_e, dee_dx[unique_indices], den_dx[unique_indices], unique_length
     
@@ -554,7 +554,7 @@ class Paleodetector:
 
             sum_drdx += drdx['total']
 
-        return np.asarray(sum_drdx)
+        return sum_drdx
 
     def integrate_background_neutron_spectrum(
         self, 
@@ -594,7 +594,7 @@ class Paleodetector:
 
         total_tracks_interp  = interp1d(x_mids_grid, np.array(sum_drdx),  bounds_error=False, fill_value='extrapolate')
 
-        total_tracks = [quad(total_tracks_interp, x_bins[i], x_bins[i+1])[0] for i in range(len(x_mids))]
+        total_tracks = np.array([quad(total_tracks_interp, x_bins[i], x_bins[i+1])[0] for i in range(len(x_mids))])
 
         return total_tracks
 
@@ -707,7 +707,7 @@ class Paleodetector:
         
         dRdx = (counts / num_events) * fission_rate_factor / bin_widths
         
-        return np.asarray(dRdx)
+        return dRdx
     
     def integrate_fission_spectrum(self, x_bins, age, sample_mass, x_grid=TRACK_LENGTH_BINS_NM):
 
@@ -718,7 +718,7 @@ class Paleodetector:
 
         total_tracks_interp  = interp1d(x_mids_grid, np.array(drdx),  bounds_error=False, fill_value='extrapolate')
 
-        total_tracks = [quad(total_tracks_interp, x_bins[i], x_bins[i+1])[0] for i in range(len(x_mids))]
+        total_tracks = np.asarray([quad(total_tracks_interp, x_bins[i], x_bins[i+1])[0] for i in range(len(x_mids))])
 
         return total_tracks
 

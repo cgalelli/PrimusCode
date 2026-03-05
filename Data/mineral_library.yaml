@@ -26,7 +26,7 @@ Olivine:
   - 1
   - 4
   uranium_concentration_g_g: 1.0e-07
-  density_g_cm3: 3.8
+  density_g_cm3: 3.3
   an_coeff_n_nalpha: 0.1
 Quartz:
   name: Quartz
