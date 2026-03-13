@@ -122,7 +122,7 @@ def calibrate_spectrum(x_bins, counts, x_scale_factor=1.0, y_scale_factor=1.0):
 
     return calibrated_y*y_scale_factor
 
-def slice_spectrum(x_bins, counts, angular_pdf=None, phi_cut_deg=0., l_min_measurable=300., l_max_measurable=50000., pit_width=500., bulk_etching_depth=TYPICAL_DEPTH_MM*1.e6, f_phi= lambda phi: 1., n_samples=1e6, correction=True, factor=10):
+def slice_spectrum(x_bins, counts, angular_pdf=None, phi_cut_deg=0., pit_width=500., bulk_etching_depth=TYPICAL_DEPTH_MM*1.e6, f_phi= lambda phi: 1., correction=True):
     """
     Applies Monte Carlo simulation of track slicing, accounting for geometrical, angular, 
     and experimental filtering effects (min/max measurable length).
@@ -134,18 +134,12 @@ def slice_spectrum(x_bins, counts, angular_pdf=None, phi_cut_deg=0., l_min_measu
                                             of tracks relative to the surface normal. Defaults to isotropic (sin(phi)).
         phi_cut_deg (float): Angular filter threshold (tracks with phi < phi_cut are rejected). 
                                 Set to 0.0 for highly-faithful plasma etching.
-        l_min_measurable (float): Minimum measurable segment length, L_min [nm]. Tracks shorter than 
-                                    this are lost due resolution limits.
-        l_max_measurable (float): Maximum measurable segment length, L_max [nm]. This caps 
-                                    the pit size due to saturation effects in the etching process.
         pit_width (float): Typical width of the etched pit [nm]. 
                             Tracks with parallel footprint smaller than this threshold will be measured by this.
         bulk_etching_depth (float): Vertical development of the etching [nm]. 
         f_phi (callable): Function applied to the segment length L_seg * f_phi(phi). Corrects 
                             for anisotropic enlargement (e.g., set to lambda phi: 1.0 for plasma etching).
-        n_samples (int): Number of Monte Carlo tracks to simulate for accurate statistics.
         correction (bool): If True, applies pit_width correction. If not, the pit_width correction is ignored.
-        factor (int): Number of slices to consider above and below the target.  
     Returns:
         np.ndarray: The resulting measured track count histogram N(L_meas), normalized to 
                     the total input counts.
@@ -154,49 +148,47 @@ def slice_spectrum(x_bins, counts, angular_pdf=None, phi_cut_deg=0., l_min_measu
     x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
     phi_cut_rad = np.deg2rad(phi_cut_deg)
 
+    factor = int(x_bins[-1]/bulk_etching_depth)
+
+    stat_factor = np.sum(counts) * (factor + 1)
+
+
+    n_samples = stat_factor * 10**np.rint(8 - np.log10(stat_factor))
+
     samples = np.random.choice(x_mids, size=int(n_samples), p=counts/np.sum(counts))
 
-    phi_grid = np.linspace(0, np.pi / 2, 1000)
-
-    if not angular_pdf:
-        angular_pdf = np.sin(phi_grid)
-
-    sampled_angles = np.random.choice(phi_grid, size=int(n_samples), p=angular_pdf / np.sum(angular_pdf))
+    if angular_pdf:
+        phi_grid = np.linspace(0, np.pi / 2, 1000)
+        sampled_angles = np.random.choice(phi_grid, size=int(n_samples), p=angular_pdf / np.sum(angular_pdf))
+    else:
+        sampled_angles = np.random.uniform(low=0, high=np.pi / 2, size=int(n_samples))
 
     is_retained = sampled_angles >= phi_cut_rad
 
     samples_retained = samples[is_retained]
     phi_retained = sampled_angles[is_retained]
 
-    sim_start_point = np.random.uniform(low = -factor*bulk_etching_depth, high = factor*bulk_etching_depth, size=len(samples_retained))
+    sim_start_point = np.random.uniform(low = -factor*bulk_etching_depth, high = bulk_etching_depth, size=len(samples_retained))
 
     sim_end_point = sim_start_point + (samples_retained * np.sin(phi_retained))
 
-    valid = (sim_end_point > 0.) & (sim_start_point < bulk_etching_depth)
+    valid = (sim_end_point > bulk_etching_depth)
 
     angles_valid = phi_retained[valid]
     cut_sim_true_depth = sim_end_point[valid]
-    cut_sim_start_depth = np.clip(sim_start_point[valid], a_min=0., a_max=np.inf)
 
-    depth = (cut_sim_true_depth - bulk_etching_depth)/np.sin(angles_valid) - cut_sim_start_depth
+    depth = (cut_sim_true_depth - bulk_etching_depth)/np.sin(angles_valid)
 
     measured_samples = depth*f_phi(angles_valid)
 
-    is_retained_length = measured_samples >= l_min_measurable
-
-    measurable_samples = measured_samples[is_retained_length]
-    measurable_angles = angles_valid[is_retained_length]
-
     if correction:
-        corrected_measurable_samples = np.where(measurable_samples * np.cos(measurable_angles) >= pit_width/2., (pit_width/2.)+measurable_samples * np.cos(measurable_angles), pit_width)
+        corrected_measurable_samples = np.where(measured_samples * np.cos(angles_valid) >= pit_width/2., (pit_width/2.)+measured_samples * np.cos(angles_valid), pit_width)
     else:
-        corrected_measurable_samples = measurable_samples
+        corrected_measurable_samples = measured_samples
 
-    final_measured_samples = np.minimum(corrected_measurable_samples, l_max_measurable)
+    hist_measured, _ = np.histogram(corrected_measurable_samples, bins=x_bins, density=False)
 
-    hist_measured, _ = np.histogram(final_measured_samples, bins=x_bins, density=False)
-
-    hist_norm = hist_measured * (np.sum(counts) * 1.9 / (n_samples))
+    hist_norm = hist_measured / 10**np.rint(8 - np.log10(stat_factor))
 
     return hist_norm
 
