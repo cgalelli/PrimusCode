@@ -405,7 +405,7 @@ class Paleodetector:
         """
         sf_yield_per_gu_s = 0.1353
         sf_yield_per_g_s = self.config['uranium_concentration_g_g'] * sf_yield_per_gu_s
-        energies = np.logspace(-6, -1, 100)
+        energies = np.logspace(-6, -1, 10000)
 
         a, b = 0.00065, 3700.0
         watt_shape = np.exp(-energies / a) * np.sinh(np.sqrt(b * energies))
@@ -430,7 +430,7 @@ class Paleodetector:
 
         alpha, beta_gev, cutoff_e_gev = 2, 900, 0.0065
 
-        energies_gev = np.logspace(-4, -0.5, 100)
+        energies_gev = np.logspace(-4, -0.5, 10000)
 
         an_shape_gev = (energies_gev**alpha)* np.exp(-beta_gev*energies_gev)
         an_shape_gev *= 1.0 / (1.0 + np.exp((energies_gev - cutoff_e_gev) / 0.0005))
