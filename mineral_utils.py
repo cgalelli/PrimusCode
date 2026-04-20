@@ -27,6 +27,14 @@ TRACK_LENGTH_BINS_NM = np.logspace(LENGTH_MIN_LOG_NM, LENGTH_MAX_LOG_NM, LENGTH_
 
 TYPICAL_DEPTH_MM = 0.001
 
+SCENARIO_SIMPLE = {
+    'name': 'simple',
+    'event_fluxes': {
+        0.: ('H3a', 'H3a'),
+        300000.: ('H3a', 'H3a'),
+    }
+}
+
 # --- Utility Functions ---
 def log_interp1d(xx, yy, kind='linear'):
     """
@@ -767,7 +775,7 @@ class Paleodetector:
 
         else:
             self._depth_interpolators[species]['attenuation'] = interp1d(pri_energies, attenuation, kind='linear', fill_value='extrapolate', bounds_error=False)
-
+    
     def _clipped_maxdepth(self, x):
         """Clipped maximum penetration depth (pickleable instance method)."""
         return np.clip(self._maxdepth_interp(x), 0.5e-3, np.inf)
@@ -776,13 +784,13 @@ class Paleodetector:
         """Clipped mean width (pickleable instance method)."""
         return np.clip(self._meanwidth_interp(x), 1.e-4, np.inf)
 
-    def _interpolate_flux_scenarios(self, scenario_config, species='mu-'):
+    def _interpolate_flux_scenarios(self, scenario_config=SCENARIO_SIMPLE, species='mu-'):
         """
         Interpolates particle flux data for a given scenario configuration.
         
         Args:
             scenario_config (dict): A dictionary containing the scenario configuration,
-                                    including 'name' and 'event_fluxes'.
+                                    including 'name' and 'event_fluxes'. Defaults to SCENARIO_SIMPLE.
             species (str, optional): The particle species to simulate ('mu+', 'mu-', or 'neutron'). Defaults to 'mu-'.
 
         """
@@ -833,14 +841,14 @@ class Paleodetector:
         self._flux_interpolators[f'{scenario_config["name"]}_{species}'] = interpolators
         self._energy_GeV[f'{scenario_config["name"]}_{species}'] = energies
 
-    def _get_local_neutron_flux(self, target_depth, scenario_name, t_kyr, energy_bins_gev, total_simulated_particles=1e4, species_list=['mu-', 'mu+', 'neutron']):
+    def _get_local_neutron_flux(self, target_depth, t_kyr, energy_bins_gev,  scenario_name='simple', total_simulated_particles=1e4, species_list=['mu-', 'mu+', 'neutron']):
         """
         Computes the local neutron flux at a given depth by processing Geant4 simulation data.
         Args:
             target_depth (float): The target depth.
-            scenario_name (str): The name of the flux scenario to use.
             t_kyr (float): The time in kiloyears for which to compute the flux.
             energy_bins_gev (np.ndarray): The energy bin edges [GeV].
+            scenario_name (str): The name of the flux scenario to use. Defaults to 'simple'.
             total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.
             species_list (list, optional): List of particle species to consider. Defaults to ['mu-', 'mu+', 'neutron'].
         Returns:
@@ -933,14 +941,14 @@ class Paleodetector:
                         all_fragments.add(name)
         return sorted(list(all_fragments))
 
-    def _process_geant4_data(self, t_kyr, scenario_name, energy_bins_gev, depth_mwe=0., total_simulated_particles=1e4, target_thickness_mm=TYPICAL_DEPTH_MM, species='mu-'):
+    def _process_geant4_data(self, t_kyr, energy_bins_gev, scenario_name='simple', depth_mwe=0., total_simulated_particles=1e4, target_thickness_mm=TYPICAL_DEPTH_MM, species='mu-'):
         """
         Processes raw Geant4 data for a given scenario, creating a normalized recoil spectrum file.
 
         Args:
             t_kyr (float): The time in kiloyears for which to process the data.
-            scenario_name (str): The name of the flux scenario to use.
             energy_bins_gev (np.ndarray): The energy bin edges [GeV].
+            scenario_name (str): The name of the flux scenario to use. Defaults to 'simple'.
             depth_mwe (float, optional): Shielding depth [m.w.e.]. Defaults to 0.
             total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.
             target_thickness_mm (float): The thickness of the target [mm].
@@ -1077,12 +1085,12 @@ class Paleodetector:
         if self.verbose>1:
             print(f"    - Saved processed data to {output_filepath}")
 
-    def _process_secondary_geant4_data(self, t_kyr, scenario_name, energy_bins_gev, depth_mwe=0., total_simulated_particles=1e4, target_thickness_mm=TYPICAL_DEPTH_MM, secondary_neutrons_species=['mu-', 'mu+', 'neutron']):
+    def _process_secondary_geant4_data(self, t_kyr, energy_bins_gev, scenario_name='simple', depth_mwe=0., total_simulated_particles=1e4, target_thickness_mm=TYPICAL_DEPTH_MM, secondary_neutrons_species=['mu-', 'mu+', 'neutron']):
         """
         Processes raw Geant4 data for secondary neutrons from a given scenario, creating a normalized recoil spectrum file.
         Args:
             t_kyr (float): The time in kiloyears for which to process the data.
-            scenario_name (str): The name of the flux scenario to use.
+            scenario_name (str): The name of the flux scenario to use. Defaults to 'simple'.
             energy_bins_gev (np.ndarray): The energy bin edges [GeV].
             depth_mwe (float, optional): Shielding depth [m.w.e.]. Defaults to 0.
             total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.
@@ -1228,17 +1236,17 @@ class Paleodetector:
         
         return dRdx_by_nucleus
 
-    def calculate_particle_signal_spectrum(self, x_bins, t_kyr, scenario_name, energy_bins_gev, depth_mwe, total_simulated_particles=1e4,  target_thickness_mm=TYPICAL_DEPTH_MM, species='mu-', nucleus="total", time_precision=0):
+    def calculate_particle_signal_spectrum(self, x_bins, t_kyr, energy_bins_gev, depth_mwe, scenario_name='simple', total_simulated_particles=1e4,  target_thickness_mm=TYPICAL_DEPTH_MM, species='mu-', nucleus="total", time_precision=0):
         """
         Calculates the final particle-induced differential track length spectrum (dR/dx) for a given depth.
 
         Args:
             x_bins (np.ndarray): The bin edges for the output track length spectrum [nm].
             t_kyr (float): The time in kiloyears for which to calculate the spectrum.
-            scenario_name (str): The name of the flux scenario to use.
+            scenario_name (str): The name of the flux scenario to use. Defaults to 'simple'.
             energy_bins_gev (np.ndarray): The energy bin edges [GeV].
             target_thickness_mm (float): Target thickness [mm].
-            depth_mwe (float): Shielding depth [m.w.e.].
+            depth_mwe (float): Shielding depth [m.w.e.).
             total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.
             target_thickness_mm (float): Target thickness [mm].
             species (str, optional): The particle species to simulate ('mu+', 'mu-', or 'neutron', 'secondary_neutron'). Defaults to 'mu-'.
@@ -1278,26 +1286,26 @@ class Paleodetector:
         Returns:
             np.ndarray: The number of tracks produced in each bin for this timestep.
         """
-        x_bins, t_kyr, scenario_name, energy_bins_gev, \
+        x_bins, t_kyr, energy_bins_gev, scenario_name, \
         initial_depth, deposition_rate_m_kyr, \
         overburden_density_g_cm3, total_simulated_particles, target_thickness_mm, species = args
 
         depth_mwe = initial_depth + deposition_rate_m_kyr * t_kyr * overburden_density_g_cm3
 
         dRdx_at_depth = self.calculate_particle_signal_spectrum(
-            x_bins, t_kyr, scenario_name, energy_bins_gev,
-            depth_mwe, total_simulated_particles, target_thickness_mm, species
+            x_bins, t_kyr, energy_bins_gev,
+            depth_mwe, scenario_name, total_simulated_particles, target_thickness_mm, species
         )
 
         return dRdx_at_depth, t_kyr
 
     def integrate_particle_signal_spectrum_parallel(
                 self, 
-                x_bins, 
-                scenario_config, 
+                x_bins,  
                 energy_bins_gev, 
                 exposure_window_kyr, 
                 sample_mass_kg, 
+                scenario_config=SCENARIO_SIMPLE,
                 initial_depth=0, 
                 deposition_rate_m_kyr=0, 
                 overburden_density_g_cm3=1., 
@@ -1311,10 +1319,10 @@ class Paleodetector:
 
             Args:
                 x_bins (np.ndarray): The bin edges for the output track length spectrum [nm].
-                scenario_config (dict): Configuration dictionary for the flux scenario.
                 energy_bins_gev (np.ndarray): The energy bin edges [GeV].
                 exposure_window_kyr (float): The total exposure time in kiloyears.
                 sample_mass_kg (float): The mass of the sample in kilograms.
+                scenario_config (dict): Configuration dictionary for the flux scenario. Defaults to SCENARIO_SIMPLE.
                 initial_depth (float, optional): Initial depth in meters water equivalent [m.w.e.]. Defaults to 0.
                 deposition_rate_m_kyr (float, optional): Deposition rate in meters per kiloyear. Defaults to 0.
                 overburden_density_g_cm3 (float, optional): Overburden density in g/cm³. Defaults to 1.
@@ -1346,7 +1354,7 @@ class Paleodetector:
                     steps = len(scenario_config["event_fluxes"]) + int(deposition_rate_m_kyr*exposure_window_kyr/5.)
                 t_kyr_array = np.linspace(0., exposure_window_kyr, steps + 1)
     
-            tasks = [(x_grid, t_kyr, scenario_config["name"], energy_bins_gev, 
+            tasks = [(x_grid, t_kyr, energy_bins_gev, scenario_config["name"], 
                     initial_depth, deposition_rate_m_kyr, 
                     overburden_density_g_cm3, total_simulated_particles, target_thickness_mm, species)
                     for t_kyr in t_kyr_array]
@@ -1370,10 +1378,10 @@ class Paleodetector:
 
     def integrate_all_particles(self, 
                 x_bins, 
-                scenario_config, 
                 energy_bins_gev, 
                 exposure_window_kyr, 
-                sample_mass_kg, 
+                sample_mass_kg,
+                scenario_config=SCENARIO_SIMPLE, 
                 initial_depth=0, 
                 deposition_rate_m_kyr=0, 
                 overburden_density_g_cm3=1., 
@@ -1386,10 +1394,10 @@ class Paleodetector:
 
             Args:
                 x_bins (np.ndarray): The bin edges for the output track length spectrum [nm].
-                scenario_config (dict): Configuration dictionary for the flux scenario.
                 energy_bins_gev (np.ndarray): The energy bin edges [GeV].
                 exposure_window_kyr (float): The total exposure time in kiloyears.
                 sample_mass_kg (float): The mass of the sample in kilograms.
+                scenario_config (dict): Configuration dictionary for the flux scenario.
                 initial_depth (float, optional): Initial depth in meters water equivalent [m.w.e.]. Defaults to 0.
                 deposition_rate_m_kyr (float, optional): Deposition rate in meters per kiloyear. Defaults to 0.
                 overburden_density_g_cm3 (float, optional): Overburden density in g/cm³. Defaults to 1.
