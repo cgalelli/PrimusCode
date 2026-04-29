@@ -54,55 +54,6 @@ def log_interp1d(xx, yy, kind='linear'):
     log_interp = lambda zz: np.power(10.0, lin_interp(np.log10(zz)))
     return log_interp
 
-def _asymmetric_gaussian_kernel(size, sigma_left, sigma_right=None):
-    """
-    Generates an asymmetric Gaussian kernel for convolution.
-
-    If sigma_left and sigma_right are not provided, it generates a standard
-    symmetric Gaussian kernel.
-
-    Args:
-        size (int): The total size (number of points) of the kernel. Must be odd.
-        sigma_left (float): The standard deviation for the left tail.
-        sigma_right (float, optional): The standard deviation for the right tail. If None, the kernel is a symmetric gaussian with sigma = sigma_left.
-
-    Returns:
-        np.ndarray: The normalized 1D convolution kernel.
-    """
-    if size % 2 == 0:
-        raise ValueError("Kernel size must be odd.")
-
-    center = size // 2
-    x = np.arange(size)
-
-    if sigma_right is None:
-        sigma_right = sigma_left
-    
-    kernel = np.zeros(size)
-    
-    kernel[:center] = np.exp(-(x[:center] - center)**2 / (2 * sigma_left**2))
-    kernel[center] = 1.0
-    kernel[center+1:] = np.exp(-(x[center+1:] - center)**2 / (2 * sigma_right**2))
-    
-    return kernel / np.sum(kernel)
-
-def smear_spectrum(counts, size, sigma_left, sigma_right=None):
-    """
-    Applies asymmetric gaussian smearing to the track length distribution.
-
-    Args:
-        counts (np.ndarray): Track counts in the bins.
-        size (int): The total size (number of points) of the kernel. Must be odd.
-        sigma_left (float): The standard deviation for the left tail.
-        sigma_right (float, optional): The standard deviation for the right tail. If None, the kernel is a symmetric gaussian with sigma = sigma_left.
-
-    Returns:
-        np.ndarray: The smeared track counts.
-    """        
-    smeared_counts = np.convolve(counts, _asymmetric_gaussian_kernel(size, sigma_left, sigma_right), mode='same')
-
-    return smeared_counts
-
 def calibrate_spectrum(x_bins, counts, x_scale_factor=1.0, y_scale_factor=1.0):
     """
     Applies an absolute calibration shift to the x-axis (track length) and y-axis (counts) of a spectrum.
