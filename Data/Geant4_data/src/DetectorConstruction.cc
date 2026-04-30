@@ -61,19 +61,19 @@ void DetectorConstruction::DefineMaterials()
   Olivine->AddElement(O, 0.571);
 
  // --- ORTHOPYROXENE (90% Enstatite)((Mg,Fe)2Si2O6) ---
-  G4Material* Orthopiroxene = new G4Material("Orthopiroxene", 3.25*CLHEP::g/CLHEP::cm3, 4);
-  Orthopiroxene->AddElement(Mg, 0.18); // Mg_1.8
-  Orthopiroxene->AddElement(Fe, 0.02); // Fe_0.2
-  Orthopiroxene->AddElement(Si, 0.2);
-  Orthopiroxene->AddElement(O, 0.6);
+  G4Material* Orthopyroxene = new G4Material("Orthopyroxene", 3.25*CLHEP::g/CLHEP::cm3, 4);
+  Orthopyroxene->AddElement(Mg, 0.18); // Mg_1.8
+  Orthopyroxene->AddElement(Fe, 0.02); // Fe_0.2
+  Orthopyroxene->AddElement(Si, 0.2);
+  Orthopyroxene->AddElement(O, 0.6);
 
  // --- CLINOPYROXENE (90% Diopside)(Ca(Mg,Fe)Si2O6) ---
-  G4Material* Clinopiroxene = new G4Material("Clinopiroxene", 3.4*CLHEP::g/CLHEP::cm3, 5);
-  Clinopiroxene->AddElement(Ca, 0.1); 
-  Clinopiroxene->AddElement(Mg, 0.09); // Mg_0.9
-  Clinopiroxene->AddElement(Fe, 0.01); // Fe_0.1
-  Clinopiroxene->AddElement(Si, 0.2);
-  Clinopiroxene->AddElement(O, 0.6);
+  G4Material* Clinopyroxene = new G4Material("Clinopyroxene", 3.4*CLHEP::g/CLHEP::cm3, 5);
+  Clinopyroxene->AddElement(Ca, 0.1); 
+  Clinopyroxene->AddElement(Mg, 0.09); // Mg_0.9
+  Clinopyroxene->AddElement(Fe, 0.01); // Fe_0.1
+  Clinopyroxene->AddElement(Si, 0.2);
+  Clinopyroxene->AddElement(O, 0.6);
 
   G4Material* StdRock = new G4Material("StdRock",2.65*CLHEP::g/CLHEP::cm3,4, kStateSolid );
   StdRock->AddElement(O,  52.*perCent);

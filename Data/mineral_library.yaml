@@ -77,8 +77,8 @@ Apatite:
   uranium_concentration_g_g: 1.0e-05
   density_g_cm3: 3.15
   an_coeff_n_nalpha: 1.33
-Orthopiroxene:
-  name: Orthopiroxene
+Orthopyroxene:
+  name: Orthopyroxene
   shortname: Opx
   composition: Mg-Fe-Si- O
   nuclei:
