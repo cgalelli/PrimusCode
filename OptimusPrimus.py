@@ -260,9 +260,9 @@ class OptimusPrimus:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
         if not os.path.isdir(self.image_path):
-            raise FileNotFoundError(f"ERROR: Image folder not found at '{self.image_path}'")
+            raise Warning(f"ERROR: Image folder not found at '{self.image_path}'")
         if not os.path.exists(self.model_path):
-            raise FileNotFoundError(f"ERROR: Model file not found at '{self.model_path}'")
+            raise Warning(f"ERROR: Model file not found at '{self.model_path}'")
 
         print(f"Configuration Loaded:")
         print(f"  Image Folder: {self.image_path}")
@@ -271,6 +271,9 @@ class OptimusPrimus:
         print(f"  Using Device: {self.device}")
 
     def load_image_groups(self):
+        if not os.path.isdir(self.image_path):
+            raise ValueError(f"ERROR: Image folder not found at '{self.image_path}'")
+
         image_files = sorted(glob.glob(os.path.join(self.image_path, '*.png')))
 
         file_pattern = re.compile(r'Frame(\d+)_Acquisition_(\d+)_(\d+)_(\d+).png')
