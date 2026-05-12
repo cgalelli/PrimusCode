@@ -80,10 +80,10 @@ Apatite:
 Orthopyroxene:
   name: Orthopyroxene
   shortname: Opx
-  composition: Mg-Fe-Si- O
+  composition: Fe-Mg-Si- O
   nuclei:
-  - Mg
   - Fe
+  - Mg
   - Si
   - O
   stoich:

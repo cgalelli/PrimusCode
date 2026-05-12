@@ -1060,7 +1060,7 @@ class Paleodetector:
 
         target_depth = depth_mwe / self.config['density_g_cm3']
 
-        slice_yield = self._get_local_neutron_flux(target_depth, scenario_name, t_kyr, energy_bins_gev, species_list=secondary_neutrons_species)
+        slice_yield = self._get_local_neutron_flux(target_depth, t_kyr, energy_bins_gev, scenario_name, species_list=secondary_neutrons_species)
         all_recoil_spectra = {}
 
         fragment_spectra = {frag: np.zeros(len(RECOIL_ENERGY_BINS_MEV) - 1) for frag in all_fragments}
@@ -1212,9 +1212,9 @@ class Paleodetector:
         filepath = os.path.join(self.data_path, "processed_recoils", self.name, species, f'{scenario_name}_{t_kyr}kyr_{depth_mwe:.1f}mwe.npz')
         if not os.path.exists(filepath):
             if species == 'secondary_neutron':
-                self._process_secondary_geant4_data(t_kyr, scenario_name, energy_bins_gev, depth_mwe, total_simulated_particles, target_thickness_mm, secondary_neutrons_species=['mu-', 'mu+', 'neutron'])
+                self._process_secondary_geant4_data(t_kyr, energy_bins_gev, scenario_name, depth_mwe, total_simulated_particles, target_thickness_mm, secondary_neutrons_species=['mu-', 'mu+', 'neutron'])
             else:
-                self._process_geant4_data(t_kyr, scenario_name, energy_bins_gev, depth_mwe, total_simulated_particles, target_thickness_mm, species)
+                self._process_geant4_data(t_kyr, energy_bins_gev,scenario_name, depth_mwe, total_simulated_particles, target_thickness_mm, species)
 
         recoil_data = np.load(filepath)
 
