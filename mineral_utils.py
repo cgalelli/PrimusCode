@@ -1174,8 +1174,8 @@ class Paleodetector:
 
             sorted_indices = np.argsort(x)
             
-            x_to_e_func = interp1d(x[sorted_indices]*1e3, e[sorted_indices]*1e-3, bounds_error=False, fill_value="extrapolate")
-            x_to_dedx_func = interp1d(x[sorted_indices]*1e3, (dee_dx[sorted_indices]+den_dx[sorted_indices])*1e-6, bounds_error=False, fill_value="extrapolate")
+            x_to_e_func = interp1d(x[sorted_indices]*1e3, e[sorted_indices]*1e-3, bounds_error=False, fill_value=0.0)
+            x_to_dedx_func = interp1d(x[sorted_indices]*1e3, (dee_dx[sorted_indices]+den_dx[sorted_indices])*1e-6, bounds_error=False, fill_value=0.0)
             
             e_at_x = x_to_e_func(x_mid_nm)
             
