@@ -197,13 +197,15 @@ class Paleodetector:
     paleo-detector analysis.
     """
     
-    def __init__(self, mineral_config, data_path_prefix="Data"):
+    def __init__(self, mineral_config, total_age_kyr, overburden_history=None, data_path_prefix="Data"):
         """
         Initializes the Paleodetector object and sets up its properties and data caches.
 
         Args:
             mineral_config (dict): A dictionary containing all properties of the mineral,
                                    such as name, composition, and nuclear data.
+            total_age_kyr (float): The total age of the sample in thousands of years.
+            overburden_history (dict, optional): A dictionary containing the overburden history data.
             data_path_prefix (str, optional): The relative path to the main data directory.
                                               Defaults to "Data/".
         """
@@ -219,6 +221,10 @@ class Paleodetector:
         
         self.alpha_n_spectrum = self._alpha_n_spectrum()
 
+        self.total_age_kyr = total_age_kyr
+
+        self.overburden_interpolator = self._interpolate_overburden_history(overburden_history)
+
         self._srim_cache = {}
         self._nuclear_data_cache = {}
         self._neutron_bkg_cache = {}
@@ -229,6 +235,47 @@ class Paleodetector:
         
         if self.verbose>0:
             print(f"Initialized Paleodetector: {self.name}")
+
+    def _interpolate_overburden_history(self, overburden_history=None):
+        """
+        Interpolates the overburden history data to create a function that returns
+        the overburden in meters water equivalent (mwe) for any given time.
+
+        Args:
+            overburden_history (dict, optional): A dictionary containing the overburden history data.
+                If None, a default constant overburden of 0 mwe is used.
+        """
+        if isinstance(overburden_history, type(float)):
+            return lambda t: overburden_history
+        elif overburden_history is None:
+            return lambda t: 0.0
+
+        initial_depth_mwe = overburden_history.get("initial_depth_mwe", 0.0)
+
+        start_time_continuous_kyr = np.atleast_1d(overburden_history["start_time_continuous_kyr"]) if "start_time_continuous_kyr" in overburden_history else [0.0]
+        end_time_continuous_kyr = np.atleast_1d(overburden_history["end_time_continuous_kyr"]) if "end_time_continuous_kyr" in overburden_history else [self.total_age_kyr]
+        rate_continuous_mwe = np.atleast_1d(overburden_history["rate_continuous_mwe"]) if "rate_continuous_mwe" in overburden_history else [0.0]
+        density_continuous_g_cm3 = np.atleast_1d(overburden_history["density_continuous_g_cm3"]) if "density_continuous_g_cm3" in overburden_history else [1.0]
+
+        time_discrete = np.atleast_1d(overburden_history["time_discrete_kyr"]) if "time_discrete_kyr" in overburden_history else [0.0]
+        overburden_discrete_mwe = np.atleast_1d(overburden_history["overburden_discrete_mwe"]) if "overburden_discrete_mwe" in overburden_history else [0.0]
+        density_discrete_g_cm3 = np.atleast_1d(overburden_history["density_discrete_g_cm3"]) if "density_discrete_g_cm3" in overburden_history else [1.0]
+
+        times = np.linspace(0, self.total_age_kyr, 10000)
+        overburdens = np.zeros_like(times) + initial_depth_mwe
+
+        for start, end, rate, density in zip(start_time_continuous_kyr, end_time_continuous_kyr, rate_continuous_mwe, density_continuous_g_cm3):
+            mask = (times >= start) & (times <= end)
+            overburdens[mask] += density * rate * (times[mask] - start)
+
+        for t, o, d in zip(time_discrete, overburden_discrete_mwe, density_discrete_g_cm3):
+            mask = (times >= t)
+            overburdens[mask] += d * o
+
+        if self.verbose>0:
+            print("Interpolating overburden history...")
+
+        return interp1d(times, overburdens, bounds_error=True)
 
     def _load_nuclear_data(self, filename):
         """
@@ -510,8 +557,7 @@ class Paleodetector:
     def integrate_background_neutron_spectrum(
         self, 
         x_bins, 
-        energy_bins_gev, 
-        total_exposure_kyr, 
+        energy_bins_gev,  
         sample_mass_kg,
         background_types=['fission_n', 'alpha_n'],
         total_simulated_particles=1e4, 
@@ -541,7 +587,7 @@ class Paleodetector:
             total_simulated_particles, 
             )
 
-        sum_drdx *= total_exposure_kyr * 1e-3 * sample_mass_kg
+        sum_drdx *= self.total_age_kyr * 1e-3 * sample_mass_kg
 
         total_tracks_interp  = interp1d(x_mids_grid, np.array(sum_drdx),  bounds_error=False, fill_value='extrapolate')
 
@@ -590,12 +636,12 @@ class Paleodetector:
         
         return dRdx * 365 * 1e6
     
-    def integrate_nu_spectrum(self, x_bins, age, sample_mass, flux_name="all", x_grid=TRACK_LENGTH_BINS_NM):
+    def integrate_nu_spectrum(self, x_bins, sample_mass, flux_name="all", x_grid=TRACK_LENGTH_BINS_NM):
 
         x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
         x_mids_grid = x_grid[:-1] + np.diff(x_grid) / 2.0
 
-        drdx = self.calculate_nu_spectrum(x_grid, flux_name) * age * sample_mass * 1e-3
+        drdx = self.calculate_nu_spectrum(x_grid, flux_name) * self.total_age_kyr * sample_mass * 1e-3
 
         total_tracks_interp  = interp1d(x_mids_grid, np.array(drdx),  bounds_error=False, fill_value='extrapolate')
 
@@ -660,12 +706,12 @@ class Paleodetector:
         
         return dRdx
     
-    def integrate_fission_spectrum(self, x_bins, age, sample_mass, x_grid=TRACK_LENGTH_BINS_NM):
+    def integrate_fission_spectrum(self, x_bins, sample_mass, x_grid=TRACK_LENGTH_BINS_NM):
 
         x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
         x_mids_grid = x_grid[:-1] + np.diff(x_grid) / 2.0
 
-        drdx = self.calculate_fission_spectrum(x_grid) * age * sample_mass * 1e-3
+        drdx = self.calculate_fission_spectrum(x_grid) * self.total_age_kyr * sample_mass * 1e-3
 
         total_tracks_interp  = interp1d(x_mids_grid, np.array(drdx),  bounds_error=False, fill_value='extrapolate')
 
@@ -1238,14 +1284,13 @@ class Paleodetector:
             np.ndarray: The number of tracks produced in each bin for this timestep.
         """
         x_bins, t_kyr, energy_bins_gev, scenario_name, \
-        initial_depth, deposition_rate_m_kyr, \
-        overburden_density_g_cm3, total_simulated_particles, target_thickness_mm, species = args
-
-        depth_mwe = initial_depth + deposition_rate_m_kyr * t_kyr * overburden_density_g_cm3
+        total_simulated_particles, target_thickness_mm, species = args
+    
+        overburden_mwe_t_kyr = self._overburden_interpolator(t_kyr)
 
         dRdx_at_depth = self.calculate_particle_signal_spectrum(
             x_bins, t_kyr, energy_bins_gev,
-            depth_mwe, scenario_name, total_simulated_particles, target_thickness_mm, species
+            overburden_mwe_t_kyr, scenario_name, total_simulated_particles, target_thickness_mm, species
         )
 
         return dRdx_at_depth, t_kyr
@@ -1257,9 +1302,7 @@ class Paleodetector:
                 exposure_window_kyr, 
                 sample_mass_kg, 
                 scenario_config=SCENARIO_SIMPLE,
-                initial_depth=0, 
-                deposition_rate_m_kyr=0, 
-                overburden_density_g_cm3=1., 
+                overburden_history=None, 
                 steps=None, 
                 total_simulated_particles=1e4, 
                 target_thickness_mm=TYPICAL_DEPTH_MM, 
@@ -1274,9 +1317,6 @@ class Paleodetector:
                 exposure_window_kyr (float): The total exposure time in kiloyears.
                 sample_mass_kg (float): The mass of the sample in kilograms.
                 scenario_config (dict): Configuration dictionary for the flux scenario. Defaults to SCENARIO_SIMPLE.
-                initial_depth (float, optional): Initial depth in meters water equivalent [m.w.e.]. Defaults to 0.
-                deposition_rate_m_kyr (float, optional): Deposition rate in meters per kiloyear. Defaults to 0.
-                overburden_density_g_cm3 (float, optional): Overburden density in g/cm³. Defaults to 1.
                 steps (int, optional): Number of time steps for integration. Defaults to 75*(number of flux changes in scenario_config).
                 total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.        
                 target_thickness_mm (float, optional): Thickness of the target [mm]. Defaults to 0.001.
@@ -1295,19 +1335,22 @@ class Paleodetector:
                 self._interpolate_flux_scenarios(scenario_config, species)
                 self._load_depth_interpolators(species)
 
+            if overburden_history is not None:
+                self._interpolate_overburden_history(overburden_history)                
+
             if self.verbose>0:
                 print(f"Integrating the signal in a {target_thickness_mm} mm slice of {self.name} with mass {sample_mass_kg*1e3} g, corresponding to {sample_mass_kg*1e3/(target_thickness_mm*0.1*self.config['density_g_cm3'])} cm2")
 
-            if isinstance(steps, np.ndarray):
-                t_kyr_array = steps
-            else:
-                if not steps:
-                    steps = len(scenario_config["event_fluxes"]) + int(deposition_rate_m_kyr*exposure_window_kyr/5.)
-                t_kyr_array = np.linspace(0., exposure_window_kyr, steps + 1)
+            if isinstance(exposure_window_kyr, (int, float)):
+                exposure_window_kyr = [0, exposure_window_kyr]
+            
+            if not steps:
+                steps = len(scenario_config["event_fluxes"]) + int((exposure_window_kyr[1] - exposure_window_kyr[0])/10.)
+            
+            t_kyr_array = np.linspace(exposure_window_kyr[0], exposure_window_kyr[1], steps + 1)
     
             tasks = [(x_grid, t_kyr, energy_bins_gev, scenario_config["name"], 
-                    initial_depth, deposition_rate_m_kyr, 
-                    overburden_density_g_cm3, total_simulated_particles, target_thickness_mm, species)
+                    total_simulated_particles, target_thickness_mm, species)
                     for t_kyr in t_kyr_array]
 
             with Pool() as pool:
@@ -1333,9 +1376,7 @@ class Paleodetector:
                 exposure_window_kyr, 
                 sample_mass_kg,
                 scenario_config=SCENARIO_SIMPLE, 
-                initial_depth=0, 
-                deposition_rate_m_kyr=0, 
-                overburden_density_g_cm3=1., 
+                overburden_history=None, 
                 steps=None, 
                 total_simulated_particles=1e4, 
                 target_thickness_mm=TYPICAL_DEPTH_MM, 
@@ -1349,9 +1390,6 @@ class Paleodetector:
                 exposure_window_kyr (float): The total exposure time in kiloyears.
                 sample_mass_kg (float): The mass of the sample in kilograms.
                 scenario_config (dict): Configuration dictionary for the flux scenario.
-                initial_depth (float, optional): Initial depth in meters water equivalent [m.w.e.]. Defaults to 0.
-                deposition_rate_m_kyr (float, optional): Deposition rate in meters per kiloyear. Defaults to 0.
-                overburden_density_g_cm3 (float, optional): Overburden density in g/cm³. Defaults to 1.
                 steps (int, optional): Number of time steps for integration. Defaults to 75*(number of flux changes in scenario_config).
                 total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.
                 target_thickness_mm (float, optional): Thickness of the target [mm]. Defaults to 0.001.
@@ -1371,9 +1409,7 @@ class Paleodetector:
                     energy_bins_gev=energy_bins_gev, 
                     exposure_window_kyr=exposure_window_kyr, 
                     sample_mass_kg=sample_mass_kg, 
-                    initial_depth=initial_depth, 
-                    deposition_rate_m_kyr=deposition_rate_m_kyr, 
-                    overburden_density_g_cm3=overburden_density_g_cm3, 
+                    overburden_history=overburden_history,
                     steps=steps, 
                     total_simulated_particles=total_simulated_particles, 
                     target_thickness_mm=target_thickness_mm, 
