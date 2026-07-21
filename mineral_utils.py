@@ -223,7 +223,7 @@ class Paleodetector:
 
         self.total_age_kyr = total_age_kyr
 
-        self.overburden_interpolator = self._interpolate_overburden_history(overburden_history)
+        self._overburden_interpolator = self._interpolate_overburden_history(overburden_history)
 
         self._srim_cache = {}
         self._nuclear_data_cache = {}
@@ -1299,8 +1299,8 @@ class Paleodetector:
                 self, 
                 x_bins,  
                 energy_bins_gev, 
-                exposure_window_kyr, 
-                sample_mass_kg, 
+                sample_mass_kg,
+                exposure_window_kyr=None, 
                 scenario_config=SCENARIO_SIMPLE,
                 overburden_history=None, 
                 steps=None, 
@@ -1314,8 +1314,8 @@ class Paleodetector:
             Args:
                 x_bins (np.ndarray): The bin edges for the output track length spectrum [nm].
                 energy_bins_gev (np.ndarray): The energy bin edges [GeV].
-                exposure_window_kyr (float): The total exposure time in kiloyears.
                 sample_mass_kg (float): The mass of the sample in kilograms.
+                exposure_window_kyr (float): The total exposure time in kiloyears.
                 scenario_config (dict): Configuration dictionary for the flux scenario. Defaults to SCENARIO_SIMPLE.
                 steps (int, optional): Number of time steps for integration. Defaults to 75*(number of flux changes in scenario_config).
                 total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.        
@@ -1340,6 +1340,9 @@ class Paleodetector:
 
             if self.verbose>0:
                 print(f"Integrating the signal in a {target_thickness_mm} mm slice of {self.name} with mass {sample_mass_kg*1e3} g, corresponding to {sample_mass_kg*1e3/(target_thickness_mm*0.1*self.config['density_g_cm3'])} cm2")
+
+            if exposure_window_kyr is None:
+                exposure_window_kyr = self.total_age_kyr
 
             if isinstance(exposure_window_kyr, (int, float)):
                 exposure_window_kyr = [0, exposure_window_kyr]
@@ -1373,8 +1376,8 @@ class Paleodetector:
     def integrate_all_particles(self, 
                 x_bins, 
                 energy_bins_gev, 
-                exposure_window_kyr, 
                 sample_mass_kg,
+                exposure_window_kyr=None, 
                 scenario_config=SCENARIO_SIMPLE, 
                 overburden_history=None, 
                 steps=None, 
@@ -1387,8 +1390,8 @@ class Paleodetector:
             Args:
                 x_bins (np.ndarray): The bin edges for the output track length spectrum [nm].
                 energy_bins_gev (np.ndarray): The energy bin edges [GeV].
-                exposure_window_kyr (float): The total exposure time in kiloyears.
                 sample_mass_kg (float): The mass of the sample in kilograms.
+                exposure_window_kyr (float, optional): The total exposure time in kiloyears. Defaults to None.
                 scenario_config (dict): Configuration dictionary for the flux scenario.
                 steps (int, optional): Number of time steps for integration. Defaults to 75*(number of flux changes in scenario_config).
                 total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.
@@ -1407,8 +1410,8 @@ class Paleodetector:
                     x_bins=x_bins, 
                     scenario_config=scenario_config, 
                     energy_bins_gev=energy_bins_gev, 
-                    exposure_window_kyr=exposure_window_kyr, 
-                    sample_mass_kg=sample_mass_kg, 
+                    sample_mass_kg=sample_mass_kg,
+                    exposure_window_kyr=exposure_window_kyr,  
                     overburden_history=overburden_history,
                     steps=steps, 
                     total_simulated_particles=total_simulated_particles, 
