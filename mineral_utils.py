@@ -8,6 +8,8 @@ from mendeleev import element
 from tqdm import tqdm
 from multiprocessing import Pool
 
+from flux_history import FluxHistory
+
 # --- Physical Constants ---
 PROTON_MASS_MEV = 938.3
 NEUTRON_MASS_MEV = 939.6
@@ -26,14 +28,6 @@ LENGTH_MAX_LOG_NM = 5.5
 TRACK_LENGTH_BINS_NM = np.logspace(LENGTH_MIN_LOG_NM, LENGTH_MAX_LOG_NM, LENGTH_N_BINS)
 
 TYPICAL_DEPTH_MM = 0.001
-
-SCENARIO_SIMPLE = {
-    'name': 'simple',
-    'event_fluxes': {
-        0.: ('H3a', 'H3a'),
-        300000.: ('H3a', 'H3a'),
-    }
-}
 
 # --- Utility Functions ---
 def log_interp1d(xx, yy, kind='linear'):
@@ -197,7 +191,7 @@ class Paleodetector:
     paleo-detector analysis.
     """
     
-    def __init__(self, mineral_config, total_age_kyr, overburden_history=None, data_path_prefix="Data"):
+    def __init__(self, mineral_config, total_age_kyr, overburden_history=None, flux_history=None, data_path_prefix="Data"):
         """
         Initializes the Paleodetector object and sets up its properties and data caches.
 
@@ -206,6 +200,14 @@ class Paleodetector:
                                    such as name, composition, and nuclear data.
             total_age_kyr (float): The total age of the sample in thousands of years.
             overburden_history (dict, optional): A dictionary containing the overburden history data.
+            flux_history (FluxHistory, optional): A FluxHistory instance describing the cosmic-ray
+                                              primary/muon/neutron flux over time. Its own timeline
+                                              runs 0 (present) -> negative (past); local t_kyr=0 here
+                                              (start of data taking) corresponds to
+                                              t_kyr=-total_age_kyr on that timeline, and local
+                                              t_kyr=total_age_kyr (present) corresponds to t_kyr=0
+                                              there. If None, a baseline-only FluxHistory is built
+                                              (or loaded from cache) the first time it's needed.
             data_path_prefix (str, optional): The relative path to the main data directory.
                                               Defaults to "Data/".
         """
@@ -225,11 +227,11 @@ class Paleodetector:
 
         self._overburden_interpolator = self._interpolate_overburden_history(overburden_history)
 
+        self.flux_history = flux_history
+
         self._srim_cache = {}
         self._nuclear_data_cache = {}
         self._neutron_bkg_cache = {}
-        self._flux_interpolators = {}
-        self._energy_GeV = {}
         self._depth_interpolators = {}
         self._secondary_n_spectrum = {}
         
@@ -781,71 +783,29 @@ class Paleodetector:
         """Clipped mean width (pickleable instance method)."""
         return np.clip(self._meanwidth_interp(x), 1.e-4, np.inf)
 
-    def _interpolate_flux_scenarios(self, scenario_config=SCENARIO_SIMPLE, species='mu-'):
+    def _flux_time_kyr(self, t_kyr):
         """
-        Interpolates particle flux data for a given scenario configuration.
-        
+        Converts this class's local exposure-clock time (0 = start of data
+        taking / formation, total_age_kyr = present) into the absolute
+        timeline used by FluxHistory (0 = present, negative = past). This
+        is the single place that mapping happens; every flux lookup below
+        goes through it.
+
         Args:
-            scenario_config (dict): A dictionary containing the scenario configuration,
-                                    including 'name' and 'event_fluxes'. Defaults to SCENARIO_SIMPLE.
-            species (str, optional): The particle species to simulate ('mu+', 'mu-', or 'neutron'). Defaults to 'mu-'.
-
+            t_kyr (float): Local time [kyr], 0 (start of data taking) to
+                total_age_kyr (present).
+        Returns:
+            float: The corresponding time [kyr] on the FluxHistory timeline.
         """
-        times = []
-        flux_arrays = []
+        return t_kyr - self.total_age_kyr
 
-        if species == 'mu+' or species == 'mu-':
-            col = 1
-        elif species == 'neutron':
-            col = 2
-        else:
-            raise ValueError('Accepted species are mu+, mu- and neutron')
-        
-        for scenario in scenario_config['event_fluxes'].items():
-            times.append(scenario[0])
-            _, filename_tag = scenario[1]
-            flux_filepath = os.path.join(self.data_path, "flux_data", f"{filename_tag}.txt")
-            if not os.path.exists(flux_filepath):
-                print(f"Warning: Flux file not found: {flux_filepath}")
-                continue
-            
-            energies, flux = np.loadtxt(flux_filepath, usecols=(0, col), unpack=True)
-
-            mask = flux>0.
-
-            energies_n = energies[mask]
-            flux = flux[mask]
-
-            if species == 'mu+' or species == 'mu-':
-                flux /= 2.
-            elif species == 'neutron':
-                energies = np.logspace(-2, 4, 50)
-                flux = flux[18]*np.exp(-0.675/energies)*(energies/energies_n[18])**(-2.4)
-
-            flux_arrays.append(flux)
-        
-        flux_arrays = np.array(flux_arrays)
-        if len(times)== 1:
-            kind = "nearest"
-        else:
-            kind = "linear"
-
-        interpolators = []
-        for i in range(len(flux_arrays[0])):
-            interp_func = interp1d(times, flux_arrays[:, i], kind=kind, fill_value="extrapolate", bounds_error=False)
-            interpolators.append(interp_func)
-        
-        self._flux_interpolators[f'{scenario_config["name"]}_{species}'] = interpolators
-        self._energy_GeV[f'{scenario_config["name"]}_{species}'] = energies
-
-    def _get_local_neutron_flux(self, target_depth, t_kyr, energy_bins_gev,  scenario_name='simple', total_simulated_particles=1e4, species_list=['mu-', 'mu+', 'neutron']):
+    def _get_local_neutron_flux(self, target_depth, t_kyr, energy_bins_gev, total_simulated_particles=1e4, species_list=['mu-', 'mu+', 'neutron']):
         """
         Computes the local neutron flux at a given depth by processing Geant4 simulation data.
         Args:
             target_depth (float): The target depth.
             t_kyr (float): The time in kiloyears for which to compute the flux.
             energy_bins_gev (np.ndarray): The energy bin edges [GeV].
-            scenario_name (str): The name of the flux scenario to use. Defaults to 'simple'.
             total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.
             species_list (list, optional): List of particle species to consider. Defaults to ['mu-', 'mu+', 'neutron'].
         Returns:
@@ -860,16 +820,15 @@ class Paleodetector:
     
         slice_yield = np.zeros(((len(depth_bins)-1), len(energy_bins_gev)))
 
+        if self.flux_history is None:
+            raise ValueError("flux_history not initialized. Call integrate_particle_signal_spectrum_parallel first, or set self.flux_history directly.")
+
+        t_kyr_flux = self._flux_time_kyr(t_kyr)
+
         for species in species_list:
-            if not self._flux_interpolators[f'{scenario_name}_{species}']:
-                raise ValueError(f"Flux interpolators not initialized for scenario {scenario_name} and species {species}.")
-
-            flux_val = np.array([interp_func(t_kyr) for interp_func in self._flux_interpolators[f'{scenario_name}_{species}']])
-            flux_interpolator = log_interp1d(self._energy_GeV[f'{scenario_name}_{species}'], flux_val)
-
             geant4_input_dir = os.path.join(self.data_path, "Geant4_data", f"{self.name}_{species}")
-                
-            initial_flux = flux_interpolator(energy_bins_gev)
+
+            initial_flux = self.flux_history.flux(species, energy_bins_gev, t_kyr_flux)
             accumulated_yield = np.zeros(len(edges)-1)
             counts = np.zeros((len(energy_bins_gev), len(depth_bins)-1, len(edges)-1))
 
@@ -908,6 +867,8 @@ class Paleodetector:
                 accumulated_yield += produced_at_k
                 
                 slice_yield[k] += produced_at_k
+
+        scenario_name = self.flux_history.baseline.name + "_" + "_".join(event["template"].name  +  "_" + str(-event["start_time_kyr"]) + "kyr" for event in self.flux_history.events)
         
         self._secondary_n_spectrum[f'{target_depth}_{scenario_name}_{t_kyr}_{species_list}'] = slice_yield
         return slice_yield
@@ -938,29 +899,27 @@ class Paleodetector:
                         all_fragments.add(name)
         return sorted(list(all_fragments))
 
-    def _process_geant4_data(self, t_kyr, energy_bins_gev, scenario_name='simple', depth_mwe=0., total_simulated_particles=1e4, target_thickness_mm=TYPICAL_DEPTH_MM, species='mu-'):
+    def _process_geant4_data(self, t_kyr, energy_bins_gev, depth_mwe=0., total_simulated_particles=1e4, target_thickness_mm=TYPICAL_DEPTH_MM, species='mu-'):
         """
         Processes raw Geant4 data for a given scenario, creating a normalized recoil spectrum file.
 
         Args:
             t_kyr (float): The time in kiloyears for which to process the data.
             energy_bins_gev (np.ndarray): The energy bin edges [GeV].
-            scenario_name (str): The name of the flux scenario to use. Defaults to 'simple'.
             depth_mwe (float, optional): Shielding depth [m.w.e.]. Defaults to 0.
             total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.
             target_thickness_mm (float): The thickness of the target [mm].
             species (str, optional): The particle species to simulate ('mu+', 'mu-', or 'neutron'). Defaults to 'mu-'.
         """
 
-        if not self._flux_interpolators[f'{scenario_name}_{species}']:
-            raise ValueError(f"Flux interpolators not initialized for scenario {scenario_name} and species {species}.")
+        if self.flux_history is None:
+            raise ValueError("flux_history not initialized. Call integrate_particle_signal_spectrum_parallel first, or set self.flux_history directly.")
 
         if not self._depth_interpolators[species]:
             raise ValueError(f"Depth interpolators not initialized for species {species}.")
 
-        flux_val = np.array([interp_func(t_kyr) for interp_func in self._flux_interpolators[f'{scenario_name}_{species}']])
-
-        flux_interpolator = log_interp1d(self._energy_GeV[f'{scenario_name}_{species}'], flux_val)
+        t_kyr_flux = self._flux_time_kyr(t_kyr)
+        flux_interpolator = lambda E: self.flux_history.flux(species, E, t_kyr_flux)
 
         if species == 'mu-' or species == 'mu+':
             maxdepth = self._depth_interpolators[species]['maxdepth']
@@ -1066,6 +1025,9 @@ class Paleodetector:
 
         output_dir = os.path.join(self.data_path, "processed_recoils", self.name, species)
         os.makedirs(output_dir, exist_ok=True)
+
+        scenario_name = self.flux_history.baseline.name + "_" + "_".join(event["template"].name  +  "_" + str(-event["start_time_kyr"]) + "kyr" for event in self.flux_history.events)
+
         output_filepath = os.path.join(output_dir, f'{scenario_name}_{t_kyr}kyr_{depth_mwe:.1f}mwe.npz')
 
         bin_widths_mev = np.diff(RECOIL_ENERGY_BINS_MEV)
@@ -1082,12 +1044,11 @@ class Paleodetector:
         if self.verbose>1:
             print(f"    - Saved processed data to {output_filepath}")
 
-    def _process_secondary_geant4_data(self, t_kyr, energy_bins_gev, scenario_name='simple', depth_mwe=0., total_simulated_particles=1e4, target_thickness_mm=TYPICAL_DEPTH_MM, secondary_neutrons_species=['mu-', 'mu+', 'neutron']):
+    def _process_secondary_geant4_data(self, t_kyr, energy_bins_gev, depth_mwe=0., total_simulated_particles=1e4, target_thickness_mm=TYPICAL_DEPTH_MM, secondary_neutrons_species=['mu-', 'mu+', 'neutron']):
         """
         Processes raw Geant4 data for secondary neutrons from a given scenario, creating a normalized recoil spectrum file.
         Args:
             t_kyr (float): The time in kiloyears for which to process the data.
-            scenario_name (str): The name of the flux scenario to use. Defaults to 'simple'.
             energy_bins_gev (np.ndarray): The energy bin edges [GeV].
             depth_mwe (float, optional): Shielding depth [m.w.e.]. Defaults to 0.
             total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.
@@ -1106,7 +1067,7 @@ class Paleodetector:
 
         target_depth = depth_mwe / self.config['density_g_cm3']
 
-        slice_yield = self._get_local_neutron_flux(target_depth, t_kyr, energy_bins_gev, scenario_name, species_list=secondary_neutrons_species)
+        slice_yield = self._get_local_neutron_flux(target_depth, t_kyr, energy_bins_gev, species_list=secondary_neutrons_species)
         all_recoil_spectra = {}
 
         fragment_spectra = {frag: np.zeros(len(RECOIL_ENERGY_BINS_MEV) - 1) for frag in all_fragments}
@@ -1163,6 +1124,9 @@ class Paleodetector:
 
         output_dir = os.path.join(self.data_path, "processed_recoils", self.name, 'secondary_neutron')
         os.makedirs(output_dir, exist_ok=True)
+        scenario_name = self.flux_history.baseline.name + "_" + "_".join(event["template"].name  +  "_" + str(-event["start_time_kyr"]) + "kyr" for event in self.flux_history.events)
+
+
         output_filepath = os.path.join(output_dir, f"{scenario_name}_{t_kyr}kyr_{depth_mwe:.1f}mwe.npz")
 
         bin_widths_mev = np.diff(RECOIL_ENERGY_BINS_MEV)
@@ -1233,14 +1197,13 @@ class Paleodetector:
         
         return dRdx_by_nucleus
 
-    def calculate_particle_signal_spectrum(self, x_bins, t_kyr, energy_bins_gev, depth_mwe, scenario_name='simple', total_simulated_particles=1e4,  target_thickness_mm=TYPICAL_DEPTH_MM, species='mu-', nucleus="total", time_precision=0):
+    def calculate_particle_signal_spectrum(self, x_bins, t_kyr, energy_bins_gev, depth_mwe, total_simulated_particles=1e4, target_thickness_mm=TYPICAL_DEPTH_MM, species='mu-', nucleus="total", time_precision=0):
         """
         Calculates the final particle-induced differential track length spectrum (dR/dx) for a given depth.
 
         Args:
             x_bins (np.ndarray): The bin edges for the output track length spectrum [nm].
             t_kyr (float): The time in kiloyears for which to calculate the spectrum.
-            scenario_name (str): The name of the flux scenario to use. Defaults to 'simple'.
             energy_bins_gev (np.ndarray): The energy bin edges [GeV].
             target_thickness_mm (float): Target thickness [mm].
             depth_mwe (float): Shielding depth [m.w.e.).
@@ -1255,12 +1218,14 @@ class Paleodetector:
         """
         t_kyr = round(t_kyr, time_precision)
 
+        scenario_name = self.flux_history.baseline.name + "_" + "_".join(event["template"].name  +  "_" + str(-event["start_time_kyr"]) + "kyr" for event in self.flux_history.events)
+
         filepath = os.path.join(self.data_path, "processed_recoils", self.name, species, f'{scenario_name}_{t_kyr}kyr_{depth_mwe:.1f}mwe.npz')
         if not os.path.exists(filepath):
             if species == 'secondary_neutron':
-                self._process_secondary_geant4_data(t_kyr, energy_bins_gev, scenario_name, depth_mwe, total_simulated_particles, target_thickness_mm, secondary_neutrons_species=['mu-', 'mu+', 'neutron'])
+                self._process_secondary_geant4_data(t_kyr, energy_bins_gev, depth_mwe, total_simulated_particles, target_thickness_mm, secondary_neutrons_species=['mu-', 'mu+', 'neutron'])
             else:
-                self._process_geant4_data(t_kyr, energy_bins_gev,scenario_name, depth_mwe, total_simulated_particles, target_thickness_mm, species)
+                self._process_geant4_data(t_kyr, energy_bins_gev, depth_mwe, total_simulated_particles, target_thickness_mm, species)
 
         recoil_data = np.load(filepath)
 
@@ -1283,14 +1248,14 @@ class Paleodetector:
         Returns:
             np.ndarray: The number of tracks produced in each bin for this timestep.
         """
-        x_bins, t_kyr, energy_bins_gev, scenario_name, \
+        x_bins, t_kyr, energy_bins_gev, \
         total_simulated_particles, target_thickness_mm, species = args
     
         overburden_mwe_t_kyr = self._overburden_interpolator(t_kyr)
 
         dRdx_at_depth = self.calculate_particle_signal_spectrum(
             x_bins, t_kyr, energy_bins_gev,
-            overburden_mwe_t_kyr, scenario_name, total_simulated_particles, target_thickness_mm, species
+            overburden_mwe_t_kyr, total_simulated_particles, target_thickness_mm, species
         )
 
         return dRdx_at_depth, t_kyr
@@ -1301,7 +1266,7 @@ class Paleodetector:
                 energy_bins_gev, 
                 sample_mass_kg,
                 exposure_window_kyr=None, 
-                scenario_config=SCENARIO_SIMPLE,
+                flux_history=None,
                 overburden_history=None, 
                 steps=None, 
                 total_simulated_particles=1e4, 
@@ -1316,8 +1281,13 @@ class Paleodetector:
                 energy_bins_gev (np.ndarray): The energy bin edges [GeV].
                 sample_mass_kg (float): The mass of the sample in kilograms.
                 exposure_window_kyr (float): The total exposure time in kiloyears.
-                scenario_config (dict): Configuration dictionary for the flux scenario. Defaults to SCENARIO_SIMPLE.
-                steps (int, optional): Number of time steps for integration. Defaults to 75*(number of flux changes in scenario_config).
+                flux_history (FluxHistory, optional): The flux history to use. If given, replaces
+                    (and becomes) self.flux_history for this and later calls. If omitted, the
+                    instance's existing self.flux_history is used, falling back to a baseline-only
+                    FluxHistory (built/loaded on demand) if none has been set yet. Its own timeline
+                    runs 0 (present) -> negative (past); see self._flux_time_kyr for the mapping
+                    from this method's local t_kyr (0 = start of data taking, total_age_kyr = present).
+                steps (int, optional): Number of time steps for integration. Defaults to 75*(number of flux events in flux_history).
                 total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.        
                 target_thickness_mm (float, optional): Thickness of the target [mm]. Defaults to 0.001.
                 x_grid (np.ndarray, optional): The bin edges for the internal track length spectrum [nm]. Defaults to TRACK_LENGTH_BINS_NM.
@@ -1327,12 +1297,14 @@ class Paleodetector:
                 np.ndarray: The total number of tracks expected in each track length bin.
             """
 
+            if flux_history is not None:
+                self.flux_history = flux_history
+            elif self.flux_history is None:
+                self.flux_history = FluxHistory(baseline={"kind": "Baseline"}, template_dir=os.path.join(self.data_path, "flux_data"))
+
             if species == 'secondary_neutron':
-                for t_species in ['mu-', 'mu+', 'neutron']:
-                    self._interpolate_flux_scenarios(scenario_config, t_species)
                 self._load_depth_interpolators('neutron')
             else:
-                self._interpolate_flux_scenarios(scenario_config, species)
                 self._load_depth_interpolators(species)
 
             if overburden_history is not None:
@@ -1348,11 +1320,11 @@ class Paleodetector:
                 exposure_window_kyr = [0, exposure_window_kyr]
             
             if not steps:
-                steps = len(scenario_config["event_fluxes"]) + int((exposure_window_kyr[1] - exposure_window_kyr[0])/10.)
+                steps = len(self.flux_history.events) + int((exposure_window_kyr[1] - exposure_window_kyr[0])/10.)
             
             t_kyr_array = np.linspace(exposure_window_kyr[0], exposure_window_kyr[1], steps + 1)
     
-            tasks = [(x_grid, t_kyr, energy_bins_gev, scenario_config["name"], 
+            tasks = [(x_grid, t_kyr, energy_bins_gev,
                     total_simulated_particles, target_thickness_mm, species)
                     for t_kyr in t_kyr_array]
 
@@ -1378,7 +1350,7 @@ class Paleodetector:
                 energy_bins_gev, 
                 sample_mass_kg,
                 exposure_window_kyr=None, 
-                scenario_config=SCENARIO_SIMPLE, 
+                flux_history=None,
                 overburden_history=None, 
                 steps=None, 
                 total_simulated_particles=1e4, 
@@ -1392,8 +1364,9 @@ class Paleodetector:
                 energy_bins_gev (np.ndarray): The energy bin edges [GeV].
                 sample_mass_kg (float): The mass of the sample in kilograms.
                 exposure_window_kyr (float, optional): The total exposure time in kiloyears. Defaults to None.
-                scenario_config (dict): Configuration dictionary for the flux scenario.
-                steps (int, optional): Number of time steps for integration. Defaults to 75*(number of flux changes in scenario_config).
+                flux_history (FluxHistory, optional): The flux history to use -- see
+                    integrate_particle_signal_spectrum_parallel for the timeline convention.
+                steps (int, optional): Number of time steps for integration. Defaults to 75*(number of flux events in flux_history).
                 total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.
                 target_thickness_mm (float, optional): Thickness of the target [mm]. Defaults to 0.001.
                 species_list (list, optional): List of particle species to consider. Defaults to ['mu-', 'mu+', 'neutron', 'secondary_neutron'].
@@ -1408,7 +1381,7 @@ class Paleodetector:
                     print(f"Processing species: {species}")
                 total_tracks = self.integrate_particle_signal_spectrum_parallel(
                     x_bins=x_bins, 
-                    scenario_config=scenario_config, 
+                    flux_history=flux_history, 
                     energy_bins_gev=energy_bins_gev, 
                     sample_mass_kg=sample_mass_kg,
                     exposure_window_kyr=exposure_window_kyr,  
@@ -1424,4 +1397,3 @@ class Paleodetector:
             total_tracks_by_species['total'] = total_tracks_all
 
             return total_tracks_by_species
-
