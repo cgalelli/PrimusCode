@@ -238,6 +238,9 @@ class Paleodetector:
         if self.verbose>0:
             print(f"Initialized Paleodetector: {self.name}")
 
+    def set_flux_history(self, FluxHistory):
+        self.flux_history = FluxHistory
+
     def _interpolate_overburden_history(self, overburden_history=None):
         """
         Interpolates the overburden history data to create a function that returns
