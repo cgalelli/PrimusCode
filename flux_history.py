@@ -138,7 +138,7 @@ class FluxTemplate:
             raise ValueError(f"Unknown template kind: {params.get('kind')}")
 
         tcut = params.get("tcut", 500.)
-        t_since_kyr = np.linspace(0.001, tcut, 25) * 1.e3
+        t_since_kyr = np.linspace(0.001, tcut, 100) * 1.e3
 
         template = _build_template(name=name, model=model, params=params_tuple, t_since_kyr=t_since_kyr)
         template.save(path)

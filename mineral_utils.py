@@ -1290,7 +1290,7 @@ class Paleodetector:
                     FluxHistory (built/loaded on demand) if none has been set yet. Its own timeline
                     runs 0 (present) -> negative (past); see self._flux_time_kyr for the mapping
                     from this method's local t_kyr (0 = start of data taking, total_age_kyr = present).
-                steps (int, optional): Number of time steps for integration. Defaults to 75*(number of flux events in flux_history).
+                steps (int, optional): Number of time steps for integration.
                 total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.        
                 target_thickness_mm (float, optional): Thickness of the target [mm]. Defaults to 0.001.
                 x_grid (np.ndarray, optional): The bin edges for the internal track length spectrum [nm]. Defaults to TRACK_LENGTH_BINS_NM.
@@ -1311,10 +1311,10 @@ class Paleodetector:
                 self._load_depth_interpolators(species)
 
             if overburden_history is not None:
-                self._interpolate_overburden_history(overburden_history)                
+                self._overburden_interpolator = self._interpolate_overburden_history(overburden_history)                
 
             if self.verbose>0:
-                print(f"Integrating the signal in a {target_thickness_mm} mm slice of {self.name} with mass {sample_mass_kg*1e3} g, corresponding to {sample_mass_kg*1e3/(target_thickness_mm*0.1*self.config['density_g_cm3'])} cm2")
+                print(f"Integrating the {species} signal in a {target_thickness_mm} mm slice of {self.name} with mass {sample_mass_kg*1e3} g, corresponding to {sample_mass_kg*1e3/(target_thickness_mm*0.1*self.config['density_g_cm3'])} cm2")
 
             if exposure_window_kyr is None:
                 exposure_window_kyr = self.total_age_kyr
@@ -1325,7 +1325,7 @@ class Paleodetector:
             if not steps:
                 steps = len(self.flux_history.events) + int((exposure_window_kyr[1] - exposure_window_kyr[0])/10.)
             
-            t_kyr_array = np.linspace(exposure_window_kyr[0], exposure_window_kyr[1], steps + 1)
+            t_kyr_array = np.linspace(exposure_window_kyr[0], exposure_window_kyr[1], steps)
     
             tasks = [(x_grid, t_kyr, energy_bins_gev,
                     total_simulated_particles, target_thickness_mm, species)
