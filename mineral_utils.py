@@ -250,30 +250,36 @@ class Paleodetector:
             overburden_history (dict, optional): A dictionary containing the overburden history data.
                 If None, a default constant overburden of 0 mwe is used.
         """
-        if isinstance(overburden_history, type(float)):
-            return lambda t: overburden_history
+        if isinstance(overburden_history, (int, float)):
+            const = float(overburden_history)
+            return interp1d([0.0, self.total_age_kyr], [const, const],
+                             bounds_error=False, fill_value=const)
         elif overburden_history is None:
-            return lambda t: 0.0
+            return interp1d([0.0, self.total_age_kyr], [0.0, 0.0],
+                             bounds_error=False, fill_value=0.0)
 
-        initial_depth_mwe = overburden_history.get("initial_depth_mwe", 0.0)
+        initial_depth = overburden_history.get("initial_depth", 0.3)
+        initial_density_g_cm3 = overburden_history.get("initial_density_g_cm3", 1.0)
 
         start_time_continuous_kyr = np.atleast_1d(overburden_history["start_time_continuous_kyr"]) if "start_time_continuous_kyr" in overburden_history else [0.0]
         end_time_continuous_kyr = np.atleast_1d(overburden_history["end_time_continuous_kyr"]) if "end_time_continuous_kyr" in overburden_history else [self.total_age_kyr]
-        rate_continuous_mwe = np.atleast_1d(overburden_history["rate_continuous_mwe"]) if "rate_continuous_mwe" in overburden_history else [0.0]
+        rate_continuous = np.atleast_1d(overburden_history["rate_continuous"]) if "rate_continuous" in overburden_history else [0.0]
         density_continuous_g_cm3 = np.atleast_1d(overburden_history["density_continuous_g_cm3"]) if "density_continuous_g_cm3" in overburden_history else [1.0]
 
         time_discrete = np.atleast_1d(overburden_history["time_discrete_kyr"]) if "time_discrete_kyr" in overburden_history else [0.0]
-        overburden_discrete_mwe = np.atleast_1d(overburden_history["overburden_discrete_mwe"]) if "overburden_discrete_mwe" in overburden_history else [0.0]
+        overburden_discrete = np.atleast_1d(overburden_history["overburden_discrete"]) if "overburden_discrete" in overburden_history else [0.0]
         density_discrete_g_cm3 = np.atleast_1d(overburden_history["density_discrete_g_cm3"]) if "density_discrete_g_cm3" in overburden_history else [1.0]
 
         times = np.linspace(0, self.total_age_kyr, 10000)
-        overburdens = np.zeros_like(times) + initial_depth_mwe
+        overburdens = np.zeros_like(times) + initial_depth * initial_density_g_cm3
 
-        for start, end, rate, density in zip(start_time_continuous_kyr, end_time_continuous_kyr, rate_continuous_mwe, density_continuous_g_cm3):
+        for start, end, rate, density in zip(start_time_continuous_kyr, end_time_continuous_kyr, rate_continuous, density_continuous_g_cm3):
             mask = (times >= start) & (times <= end)
             overburdens[mask] += density * rate * (times[mask] - start)
+            mask_after_end = (times > end)
+            overburdens[mask_after_end] += density * rate * (end - start)
 
-        for t, o, d in zip(time_discrete, overburden_discrete_mwe, density_discrete_g_cm3):
+        for t, o, d in zip(time_discrete, overburden_discrete, density_discrete_g_cm3):
             mask = (times >= t)
             overburdens[mask] += d * o
 
@@ -801,80 +807,78 @@ class Paleodetector:
             float: The corresponding time [kyr] on the FluxHistory timeline.
         """
         return t_kyr - self.total_age_kyr
-
-    def _get_local_neutron_flux(self, target_depth, t_kyr, energy_bins_gev, total_simulated_particles=1e4, species_list=['mu-', 'mu+', 'neutron']):
+    
+    def _get_local_neutron_flux_batch(
+        self, target_depth_array, t_kyr_array, energy_bins_gev,
+        total_simulated_particles=1e4, species_list=('mu-', 'mu+', 'neutron'),
+        n_depth_bins=50,
+    ):
         """
-        Computes the local neutron flux at a given depth by processing Geant4 simulation data.
         Args:
-            target_depth (float): The target depth.
-            t_kyr (float): The time in kiloyears for which to compute the flux.
-            energy_bins_gev (np.ndarray): The energy bin edges [GeV].
-            total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.
-            species_list (list, optional): List of particle species to consider. Defaults to ['mu-', 'mu+', 'neutron'].
-        Returns:
-            np.ndarray: The neutron flux at each depth and energy bin.
-        """
+            target_depth_array (np.ndarray): Physical depth [cm] to which each
+                timestep's overburden corresponds (depth_mwe / density), shape (T,).
+            t_kyr_array (np.ndarray): Local exposure-clock times [kyr], shape (T,).
+            n_depth_bins (int): Resolution of the SHARED depth grid (matches the
+                original hardcoded 50).
 
-        depth_bins = np.linspace(0, target_depth, 51)
+        Returns:
+            tuple:
+                slice_yield (np.ndarray): shape (T, n_depth_bins, len(energy_bins_gev))
+                depth_bins (np.ndarray): the shared physical-depth bin edges [cm],
+                    shape (n_depth_bins + 1,) -- sized to max(target_depth_array).
+        """
+        t_kyr_array = np.atleast_1d(t_kyr_array)
+        target_depth_array = np.atleast_1d(target_depth_array)
+        n_t = len(t_kyr_array)
+
+        max_depth = np.max(target_depth_array)
+        depth_bins = np.linspace(0, max_depth, n_depth_bins + 1)
+
         internal_edges = 0.5 * (energy_bins_gev[:-1] + energy_bins_gev[1:])
         first_edge = energy_bins_gev[0] - (internal_edges[0] - energy_bins_gev[0])
         last_edge = energy_bins_gev[-1] + (energy_bins_gev[-1] - internal_edges[-1])
         edges = np.concatenate(([first_edge], internal_edges, [last_edge]))
-    
-        slice_yield = np.zeros(((len(depth_bins)-1), len(energy_bins_gev)))
 
-        if self.flux_history is None:
-            raise ValueError("flux_history not initialized. Call integrate_particle_signal_spectrum_parallel first, or set self.flux_history directly.")
+        t_kyr_flux_array = self._flux_time_kyr(t_kyr_array)  # (T,)
 
-        t_kyr_flux = self._flux_time_kyr(t_kyr)
+        slice_yield = np.zeros((n_t, n_depth_bins, len(energy_bins_gev)))
 
         for species in species_list:
             geant4_input_dir = os.path.join(self.data_path, "Geant4_data", f"{self.name}_{species}")
 
-            initial_flux = self.flux_history.flux(species, energy_bins_gev, t_kyr_flux)
-            accumulated_yield = np.zeros(len(edges)-1)
-            counts = np.zeros((len(energy_bins_gev), len(depth_bins)-1, len(edges)-1))
+            initial_flux = np.stack(
+                [self.flux_history.flux(species, energy_bins_gev, t) for t in t_kyr_flux_array],
+                axis=0,
+            )
+            accumulated_yield = np.zeros((n_t, len(edges) - 1))
 
+            counts = np.zeros((len(energy_bins_gev), n_depth_bins, len(edges) - 1))
 
             for i, e in enumerate(energy_bins_gev):
                 filepath = os.path.join(geant4_input_dir, f"outNuclei_{e:.6f}.txt")
-                if not os.path.exists(filepath): continue
-                
+                if not os.path.exists(filepath):
+                    continue
+
                 df = pd.read_csv(
-                    filepath, 
-                    sep=r'\s+', 
-                    header=None, 
-                    usecols=[0, 2, 3], 
+                    filepath, sep=r'\s+', header=None, usecols=[0, 2, 3],
                     names=['name', 'rec_e', 'depth'],
                     dtype={'name': 'category', 'rec_e': 'float32', 'depth': 'float32'},
-                    engine='c'
+                    engine='c',
                 )
-                
-                df_n = df[df['name'] == 'neutron'].copy()
+                df_n = df[df['name'] == 'neutron']
 
                 converted_depths = 100.0 - (df_n['depth'].values * 1e-3)
                 rec_energies_gev = df_n['rec_e'].values * 1e-3
-                H, _, _ = np.histogram2d(
-                    converted_depths, 
-                    rec_energies_gev, 
-                    bins=[depth_bins, edges]
-                )
+                H, _, _ = np.histogram2d(converted_depths, rec_energies_gev, bins=[depth_bins, edges])
                 counts[i, :, :] += H / total_simulated_particles
 
-            for k in range(counts.shape[1]):
-
-                current_flux = initial_flux + accumulated_yield
-
-                produced_at_k = current_flux @ counts[:, k, :]
-                
+            for k in range(n_depth_bins):
+                current_flux = initial_flux + accumulated_yield          # (T, n_energy)
+                produced_at_k = current_flux @ counts[:, k, :]            # (T, n_energy)@(n_energy, n_edges-1)
                 accumulated_yield += produced_at_k
-                
-                slice_yield[k] += produced_at_k
+                slice_yield[:, k, :] += produced_at_k
 
-        scenario_name = self.flux_history.baseline.name + "_" + "_".join(event["template"].name  +  "_" + str(-event["start_time_kyr"]) + "kyr" for event in self.flux_history.events)
-        
-        self._secondary_n_spectrum[f'{target_depth}_{scenario_name}_{t_kyr}_{species_list}'] = slice_yield
-        return slice_yield
+        return slice_yield, depth_bins
 
     def _get_all_fragments(self, energy_names_gev, species='mu-'):
         """
@@ -902,95 +906,130 @@ class Paleodetector:
                         all_fragments.add(name)
         return sorted(list(all_fragments))
 
-    def _process_geant4_data(self, t_kyr, energy_bins_gev, depth_mwe=0., total_simulated_particles=1e4, target_thickness_mm=TYPICAL_DEPTH_MM, species='mu-'):
+    def _process_geant4_data(
+        self,
+        t_kyr_array,
+        energy_bins_gev,
+        total_simulated_particles=1e4,
+        target_thickness_mm=TYPICAL_DEPTH_MM,
+        species='mu-',
+    ):
         """
-        Processes raw Geant4 data for a given scenario, creating a normalized recoil spectrum file.
+        Vectorized version: processes raw Geant4 data for an ARRAY of times at
+        once, reading/histogramming each energy-bin file exactly once and
+        reusing it across all requested timesteps.
 
         Args:
-            t_kyr (float): The time in kiloyears for which to process the data.
-            energy_bins_gev (np.ndarray): The energy bin edges [GeV].
-            depth_mwe (float, optional): Shielding depth [m.w.e.]. Defaults to 0.
-            total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.
-            target_thickness_mm (float): The thickness of the target [mm].
-            species (str, optional): The particle species to simulate ('mu+', 'mu-', or 'neutron'). Defaults to 'mu-'.
+            t_kyr_array (np.ndarray): Local exposure-clock times [kyr], shape (T,).
+            energy_bins_gev (np.ndarray): Energy bin edges [GeV].
+            total_simulated_particles (float): Particles per Geant4 run.
+            target_thickness_mm (float): Target slice thickness [mm].
+            species (str): 'mu-', 'mu+', or 'neutron'.
+
+        Returns:
+            dict: {
+                't_kyr': t_kyr_array,
+                'depth_mwe': depth_mwe_array,           # (T,)
+                'Er_bins': RECOIL_ENERGY_BINS_MEV,
+                <fragment_name>: array of shape (T, n_recoil_bins), ...
+            }
+            Also writes this dict to a single cache file for the whole batch.
         """
-
         if self.flux_history is None:
-            raise ValueError("flux_history not initialized. Call integrate_particle_signal_spectrum_parallel first, or set self.flux_history directly.")
-
-        if not self._depth_interpolators[species]:
+            raise ValueError(
+                "flux_history not initialized. Call integrate_particle_signal_spectrum_parallel "
+                "first, or set self.flux_history directly."
+            )
+        if not self._depth_interpolators.get(species):
             raise ValueError(f"Depth interpolators not initialized for species {species}.")
 
-        t_kyr_flux = self._flux_time_kyr(t_kyr)
-        flux_interpolator = lambda E: self.flux_history.flux(species, E, t_kyr_flux)
+        t_kyr_array = np.atleast_1d(np.asarray(t_kyr_array, dtype=float))
+        n_t = t_kyr_array.shape[0]
 
-        if species == 'mu-' or species == 'mu+':
+        depth_mwe_array = self._overburden_interpolator(t_kyr_array)
+        t_kyr_flux_array = self._flux_time_kyr(t_kyr_array)
+
+        if species in ('mu-', 'mu+'):
             maxdepth = self._depth_interpolators[species]['maxdepth']
             meanwidth = self._depth_interpolators[species]['meanwidth']
         else:
             slope = self._depth_interpolators[species]['attenuation']
 
         all_fragments = self._get_all_fragments(energy_bins_gev[:-1], species)
-
         geant4_input_dir = os.path.join(self.data_path, "Geant4_data", f"{self.name}_{species}")
-                
-        all_recoil_spectra = {}
 
-        fragment_spectra = {frag: np.zeros(len(RECOIL_ENERGY_BINS_MEV) - 1) for frag in all_fragments}
-    
+        n_recoil_bins = len(RECOIL_ENERGY_BINS_MEV) - 1
+        fragment_spectra = {frag: np.zeros((n_t, n_recoil_bins)) for frag in all_fragments}
+
+        target_thickness_mwe = target_thickness_mm * 0.001 * self.config['density_g_cm3']
+
         for i in range(len(energy_bins_gev) - 1):
             e_min = energy_bins_gev[i]
-            e_max = energy_bins_gev[i+1]
+            e_max = energy_bins_gev[i + 1]
 
-            N_E = 50
-            N_C = 50 
+            N_E, N_C = 50, 50
             e_vals = np.linspace(e_min, e_max, N_E)
             c_vals = np.linspace(0.01, 1.0, N_C)
-
             E_grid, C_grid = np.meshgrid(e_vals, c_vals)
 
-            z_min_grid = depth_mwe / C_grid
-            target_thickness_mwe = target_thickness_mm * 0.001 * self.config['density_g_cm3']
-            z_max_grid = z_min_grid + target_thickness_mwe / C_grid
+            z_min_grid = depth_mwe_array[:, None, None] / C_grid[None, :, :]
+            z_max_grid = z_min_grid + target_thickness_mwe / C_grid[None, :, :]
 
-            flux_grid = flux_interpolator(E_grid)
+            flux_grid = self.flux_history.get_map(species, t_kyr_flux_array, E_grid)[2].reshape(t_kyr_flux_array.size, *E_grid.shape)
 
-            if species == 'mu-' or species == 'mu+':
+            if species in ('mu-', 'mu+'):
                 D_grid = maxdepth(E_grid)
-                W_grid = meanwidth(E_grid)
+                W_grid = meanwidth(E_grid) 
 
                 effective_min = np.maximum(z_min_grid, D_grid)
                 top_A = np.minimum(z_max_grid, D_grid)
                 val_A = np.maximum(0.0, top_A - z_min_grid)
 
                 mask = z_max_grid > effective_min
-                val_B = np.zeros_like(z_max_grid)
-
-                val_B[mask] = W_grid[mask] * (np.exp(-(effective_min[mask] - D_grid[mask])/W_grid[mask]) - np.exp(-(z_max_grid[mask] - D_grid[mask])/W_grid[mask]))
+                val_B = np.where(
+                    mask,
+                    W_grid * (
+                        np.exp(-(np.maximum(effective_min, D_grid) - D_grid) / W_grid)
+                        - np.exp(-(z_max_grid - D_grid) / W_grid)
+                    ),
+                    0.0,
+                )
 
                 prob_tail_grid = (val_A + val_B) / (D_grid + W_grid)
                 integrand_tail = flux_grid * prob_tail_grid
 
-                weight_elastic = np.trapezoid(np.trapezoid(integrand_tail, e_vals, axis=1), c_vals)
+                weight_elastic_t = np.trapezoid(
+                    np.trapezoid(integrand_tail, e_vals, axis=-1), c_vals, axis=-1
+                )
 
                 if species == 'mu-':
-                    prob_peak_grid = 0.5 * (erf((z_max_grid - D_grid) / (np.sqrt(2) * W_grid)) - erf((z_min_grid - D_grid) / (np.sqrt(2) * W_grid)))
+                    prob_peak_grid = 0.5 * (
+                        erf((z_max_grid - D_grid) / (np.sqrt(2) * W_grid))
+                        - erf((z_min_grid - D_grid) / (np.sqrt(2) * W_grid))
+                    )
                     integrand_peak = flux_grid * prob_peak_grid
-
-                    weight_peak = np.trapezoid(np.trapezoid(integrand_peak, e_vals, axis=1), c_vals)
-
+                    weight_peak_t = np.trapezoid(
+                        np.trapezoid(integrand_peak, e_vals, axis=-1), c_vals, axis=-1
+                    )
             else:
-                lambda_grid = slope(E_grid) 
-                prob_attenuation_grid = np.exp(-z_min_grid / lambda_grid) - np.exp(-z_max_grid / lambda_grid)
+                lambda_grid = slope(E_grid)
+                prob_attenuation_grid = (
+                    np.exp(-z_min_grid / lambda_grid) - np.exp(-z_max_grid / lambda_grid)
+                )
                 integrand = flux_grid * prob_attenuation_grid
-                weight_elastic = np.trapezoid(np.trapezoid(integrand, e_vals, axis=1), c_vals)
+                weight_elastic_t = np.trapezoid(
+                    np.trapezoid(integrand, e_vals, axis=-1), c_vals, axis=-1
+                )
 
             filepath = os.path.join(geant4_input_dir, f"outNuclei_{e_min:.6f}.txt")
-            if not os.path.exists(filepath): continue
-
+            if not os.path.exists(filepath):
+                continue
             try:
-                df = pd.read_csv(filepath, sep=r'\s+', header=None, usecols=[0, 2, 5], 
-                                names=['name', 'rec_e', 'rem_e'], dtype={'name': str, 'rec_e': float, 'rem_e': float})
+                df = pd.read_csv(
+                    filepath, sep=r'\s+', header=None, usecols=[0, 2, 5],
+                    names=['name', 'rec_e', 'rem_e'],
+                    dtype={'name': str, 'rec_e': float, 'rem_e': float},
+                )
                 names = df['name'].values
                 rec_energies = df['rec_e'].values
                 rem_energies = df['rem_e'].values
@@ -1001,7 +1040,6 @@ class Paleodetector:
             valid_names = names[valid_mask]
             valid_rec = rec_energies[valid_mask]
             valid_rem = rem_energies[valid_mask]
-
             unique_frags = np.unique(valid_names)
 
             for frag in unique_frags:
@@ -1013,99 +1051,141 @@ class Paleodetector:
                     mask_peak = (frag_rem_energies == 0.0)
                     rec_peak = frag_rec_energies[mask_peak]
                     rec_elastic = frag_rec_energies[~mask_peak]
-                    
+
                     if len(rec_peak) > 0:
                         counts_peak, _ = np.histogram(rec_peak, bins=RECOIL_ENERGY_BINS_MEV)
-                        fragment_spectra[frag] += counts_peak * weight_peak
-                        
+                        fragment_spectra[frag] += np.outer(weight_peak_t, counts_peak)
+
                     if len(rec_elastic) > 0:
                         counts_elastic, _ = np.histogram(rec_elastic, bins=RECOIL_ENERGY_BINS_MEV)
-                        fragment_spectra[frag] += counts_elastic * weight_elastic
+                        fragment_spectra[frag] += np.outer(weight_elastic_t, counts_elastic)
                 else:
                     counts, _ = np.histogram(frag_rec_energies, bins=RECOIL_ENERGY_BINS_MEV)
-                    fragment_spectra[frag] += counts * weight_elastic
-        all_recoil_spectra.update(fragment_spectra)
+                    fragment_spectra[frag] += np.outer(weight_elastic_t, counts)
+
+        bin_widths_mev = np.diff(RECOIL_ENERGY_BINS_MEV)
+        norm_factor = (
+            bin_widths_mev * target_thickness_mm * self.config['density_g_cm3']
+            * total_simulated_particles * MYR_PER_SECOND
+        )
+
+        normalized_spectra = {}
+        for name, spectrum in fragment_spectra.items():
+            if name == 'neutron':
+                denom = bin_widths_mev * total_simulated_particles
+                normalized_spectra[name] = np.divide(
+                    spectrum, denom[None, :], out=np.zeros_like(spectrum), where=denom[None, :] != 0
+                )
+            else:
+                normalized_spectra[name] = np.divide(
+                    spectrum, norm_factor[None, :], out=np.zeros_like(spectrum),
+                    where=norm_factor[None, :] != 0,
+                )
+
+        scenario_name = self.flux_history.baseline.name + "_" + "_".join(
+            event["template"].name + "_" + str(-event["start_time_kyr"]) + "kyr"
+            for event in self.flux_history.events
+        )
 
         output_dir = os.path.join(self.data_path, "processed_recoils", self.name, species)
         os.makedirs(output_dir, exist_ok=True)
+        output_filepath = os.path.join(output_dir, f"{scenario_name}_depth{depth_mwe_array[0]:.1f}_{depth_mwe_array[-1]:.1f}mwe.npz")
 
-        scenario_name = self.flux_history.baseline.name + "_" + "_".join(event["template"].name  +  "_" + str(-event["start_time_kyr"]) + "kyr" for event in self.flux_history.events)
+        np.savez(
+            output_filepath,
+            t_kyr=t_kyr_array,
+            depth_mwe=depth_mwe_array,
+            Er_bins=RECOIL_ENERGY_BINS_MEV,
+            **normalized_spectra,
+        )
+        if self.verbose > 1:
+            print(f"    - Saved batched processed data ({n_t} timesteps) to {output_filepath}")
 
-        output_filepath = os.path.join(output_dir, f'{scenario_name}_{t_kyr}kyr_{depth_mwe:.1f}mwe.npz')
+        return {
+            't_kyr': t_kyr_array,
+            'depth_mwe': depth_mwe_array,
+            'Er_bins': RECOIL_ENERGY_BINS_MEV,
+            **normalized_spectra,
+        }
 
-        bin_widths_mev = np.diff(RECOIL_ENERGY_BINS_MEV)
-        norm_factor = (bin_widths_mev * target_thickness_mm * self.config['density_g_cm3'] * total_simulated_particles * MYR_PER_SECOND)
 
-        normalized_spectra = {}
-        for name, spectrum in all_recoil_spectra.items():
-            if name == 'neutron':
-                normalized_spectra[name] = np.divide(spectrum, bin_widths_mev*total_simulated_particles, out=np.zeros_like(spectrum), where=norm_factor!=0)
-            else:
-                normalized_spectra[name] = np.divide(spectrum, norm_factor, out=np.zeros_like(spectrum), where=norm_factor!=0)
-
-        np.savez(output_filepath, Er_bins=RECOIL_ENERGY_BINS_MEV, **normalized_spectra)
-        if self.verbose>1:
-            print(f"    - Saved processed data to {output_filepath}")
-
-    def _process_secondary_geant4_data(self, t_kyr, energy_bins_gev, depth_mwe=0., total_simulated_particles=1e4, target_thickness_mm=TYPICAL_DEPTH_MM, secondary_neutrons_species=['mu-', 'mu+', 'neutron']):
+    def _process_secondary_geant4_data(
+        self, t_kyr_array, energy_bins_gev,
+        total_simulated_particles=1e4, target_thickness_mm=TYPICAL_DEPTH_MM,
+        secondary_neutrons_species=('mu-', 'mu+', 'neutron'),
+    ):
         """
-        Processes raw Geant4 data for secondary neutrons from a given scenario, creating a normalized recoil spectrum file.
-        Args:
-            t_kyr (float): The time in kiloyears for which to process the data.
-            energy_bins_gev (np.ndarray): The energy bin edges [GeV].
-            depth_mwe (float, optional): Shielding depth [m.w.e.]. Defaults to 0.
-            total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.
-            target_thickness_mm (float): The thickness of the target [mm].
-            secondary_neutrons_species (list, optional): List of particle species to consider for secondary neutrons. Defaults to ['mu-', 'mu+', 'neutron'].
-        """ 
-
-        if not self._depth_interpolators['neutron']:
-            raise ValueError(f"Depth interpolators not initialized for neutrons.")
+        Vectorized replacement: processes secondary-neutron Geant4 data for an
+        ARRAY of times at once. See _get_local_neutron_flux_batch docstring for
+        how the time-dependent depth range (via overburden) is handled.
+        """
+        if not self._depth_interpolators.get('neutron'):
+            raise ValueError("Depth interpolators not initialized for neutrons.")
 
         slope = self._depth_interpolators['neutron']['attenuation']
-
         all_fragments = self._get_all_fragments(energy_bins_gev[:-1], species='neutron')
-
         geant4_input_dir = os.path.join(self.data_path, "Geant4_data", f"{self.name}_neutron")
 
-        target_depth = depth_mwe / self.config['density_g_cm3']
+        t_kyr_array = np.atleast_1d(np.asarray(t_kyr_array, dtype=float))
+        n_t = len(t_kyr_array)
 
-        slice_yield = self._get_local_neutron_flux(target_depth, t_kyr, energy_bins_gev, species_list=secondary_neutrons_species)
-        all_recoil_spectra = {}
+        density = self.config['density_g_cm3']
+        depth_mwe_array = self._overburden_interpolator(t_kyr_array)
+        target_depth_array = depth_mwe_array / density
 
-        fragment_spectra = {frag: np.zeros(len(RECOIL_ENERGY_BINS_MEV) - 1) for frag in all_fragments}
+        slice_yield, depth_bins = self._get_local_neutron_flux_batch(
+            target_depth_array, t_kyr_array, energy_bins_gev,
+            total_simulated_particles, secondary_neutrons_species,
+        )
 
-        eff_depth_bins = np.linspace(0, target_depth, slice_yield.shape[0]+1) * self.config['density_g_cm3']
-        eff_depth_mids = eff_depth_bins[:-1] + np.diff(eff_depth_bins) / 2
+        eff_depth_bins = depth_bins * density
+        eff_depth_mids = eff_depth_bins[:-1] + np.diff(eff_depth_bins) / 2.0
+        depth_bin_widths_mwe = np.diff(eff_depth_bins)
+        n_depth_bins = len(eff_depth_mids)
 
-        weight_elastic = 0.0
+        n_recoil_bins = len(RECOIL_ENERGY_BINS_MEV) - 1
+        fragment_spectra = {frag: np.zeros((n_t, n_recoil_bins)) for frag in all_fragments}
+        target_thickness_mwe = target_thickness_mm * 0.001 * density
 
         for i in range(len(energy_bins_gev) - 1):
             e_min = energy_bins_gev[i]
-            e_max = energy_bins_gev[i+1]
+            e_max = energy_bins_gev[i + 1]
 
-            N_E = 50
-            N_C = 50 
+            N_E, N_C = 50, 50
             e_vals = np.linspace(e_min, e_max, N_E)
             c_vals = np.linspace(0.01, 1.0, N_C)
-
             E_grid, C_grid = np.meshgrid(e_vals, c_vals)
+            lambda_grid = slope(E_grid)
 
-            for j, slice_y in enumerate(slice_yield):
-                eff_depth = depth_mwe - eff_depth_mids[j]
-                z_min_grid = eff_depth/ C_grid
-                target_thickness_mwe = target_thickness_mm * 0.001 * self.config['density_g_cm3']
-                z_max_grid = z_min_grid + target_thickness_mwe / C_grid
-                lambda_grid = slope(E_grid) 
-                prob_attenuation_grid = np.exp(-z_min_grid / lambda_grid) - np.exp(-z_max_grid / lambda_grid)
-                weight_elastic += np.diff(eff_depth_bins)[j] * slice_y[i] * np.trapezoid(np.trapezoid(prob_attenuation_grid, e_vals, axis=1), c_vals)
+            weight_elastic_t = np.zeros(n_t)
+
+            for j in range(n_depth_bins):
+                eff_depth_t = depth_mwe_array - eff_depth_mids[j]   # (T,)
+                valid_t = eff_depth_t > 0
+                if not np.any(valid_t):
+                    continue
+
+                z_min_grid = eff_depth_t[valid_t][:, None, None] / C_grid[None, :, :]
+                z_max_grid = z_min_grid + target_thickness_mwe / C_grid[None, :, :]
+                prob_attenuation_grid = (
+                    np.exp(-z_min_grid / lambda_grid) - np.exp(-z_max_grid / lambda_grid)
+                )
+                trapz_t = np.trapezoid(
+                    np.trapezoid(prob_attenuation_grid, e_vals, axis=-1), c_vals, axis=-1
+                )
+
+                contribution = np.zeros(n_t)
+                contribution[valid_t] = depth_bin_widths_mwe[j] * slice_yield[valid_t, j, i] * trapz_t
+                weight_elastic_t += contribution
 
             filepath = os.path.join(geant4_input_dir, f"outNuclei_{e_min:.6f}.txt")
-            if not os.path.exists(filepath): continue
-
+            if not os.path.exists(filepath):
+                continue
             try:
-                df = pd.read_csv(filepath, sep=r'\s+', header=None, usecols=[0, 2], 
-                                names=['name', 'rec_e'], dtype={'name': str, 'rec_e': float})
+                df = pd.read_csv(
+                    filepath, sep=r'\s+', header=None, usecols=[0, 2],
+                    names=['name', 'rec_e'], dtype={'name': str, 'rec_e': float},
+                )
                 names = df['name'].values
                 rec_energies = df['rec_e'].values
             except pd.errors.EmptyDataError:
@@ -1115,51 +1195,61 @@ class Paleodetector:
             valid_names = names[valid_mask]
             valid_rec = rec_energies[valid_mask]
 
-            unique_frags = np.unique(valid_names)
-
-            for frag in unique_frags:
+            for frag in np.unique(valid_names):
                 frag_mask = (valid_names == frag)
-                frag_rec_energies = valid_rec[frag_mask]
-
-                counts, _ = np.histogram(frag_rec_energies, bins=RECOIL_ENERGY_BINS_MEV)
-                fragment_spectra[frag] += counts * weight_elastic
-        all_recoil_spectra.update(fragment_spectra)
-
-        output_dir = os.path.join(self.data_path, "processed_recoils", self.name, 'secondary_neutron')
-        os.makedirs(output_dir, exist_ok=True)
-        scenario_name = self.flux_history.baseline.name + "_" + "_".join(event["template"].name  +  "_" + str(-event["start_time_kyr"]) + "kyr" for event in self.flux_history.events)
-
-
-        output_filepath = os.path.join(output_dir, f"{scenario_name}_{t_kyr}kyr_{depth_mwe:.1f}mwe.npz")
+                counts, _ = np.histogram(valid_rec[frag_mask], bins=RECOIL_ENERGY_BINS_MEV)
+                fragment_spectra[frag] += np.outer(weight_elastic_t, counts)
 
         bin_widths_mev = np.diff(RECOIL_ENERGY_BINS_MEV)
-        norm_factor = (bin_widths_mev * target_thickness_mm * self.config['density_g_cm3'] * total_simulated_particles * MYR_PER_SECOND)
+        norm_factor = (
+            bin_widths_mev * target_thickness_mm * density
+            * total_simulated_particles * MYR_PER_SECOND
+        )
 
         normalized_spectra = {}
-        for name, spectrum in all_recoil_spectra.items():
+        for name, spectrum in fragment_spectra.items():
             if name == 'neutron':
-                normalized_spectra[name] = np.divide(spectrum, bin_widths_mev*total_simulated_particles, out=np.zeros_like(spectrum), where=norm_factor!=0)
+                denom = bin_widths_mev * total_simulated_particles
+                normalized_spectra[name] = np.divide(
+                    spectrum, denom[None, :], out=np.zeros_like(spectrum), where=denom[None, :] != 0
+                )
             else:
-                normalized_spectra[name] = np.divide(spectrum, norm_factor, out=np.zeros_like(spectrum), where=norm_factor!=0)
+                normalized_spectra[name] = np.divide(
+                    spectrum, norm_factor[None, :], out=np.zeros_like(spectrum),
+                    where=norm_factor[None, :] != 0,
+                )
 
-        np.savez(output_filepath, Er_bins=RECOIL_ENERGY_BINS_MEV, **normalized_spectra)
-        if self.verbose>1:
-            print(f"    - Saved processed data to {output_filepath}")
+        scenario_name = self.flux_history.baseline.name + "_" + "_".join(
+            event["template"].name + "_" + str(-event["start_time_kyr"]) + "kyr"
+            for event in self.flux_history.events
+        )
+        output_dir = os.path.join(self.data_path, "processed_recoils", self.name, 'secondary_neutron')
+        os.makedirs(output_dir, exist_ok=True)
+        output_filepath = os.path.join(output_dir, f"{scenario_name}_depth{depth_mwe_array[0]:.1f}_{depth_mwe_array[-1]:.1f}mwe.npz")
+
+        np.savez(
+            output_filepath,
+            t_kyr=t_kyr_array,
+            depth_mwe=depth_mwe_array,
+            Er_bins=RECOIL_ENERGY_BINS_MEV,
+            **normalized_spectra,
+        )
+        if self.verbose > 1:
+            print(f"    - Saved batched secondary-neutron data ({n_t} timesteps) to {output_filepath}")
+
+        return {
+            't_kyr': t_kyr_array,
+            'depth_mwe': depth_mwe_array,
+            'Er_bins': RECOIL_ENERGY_BINS_MEV,
+            **normalized_spectra,
+        }
+
 
     def _convert_recoil_to_track_spectrum(self, x_bins, recoil_data, energy_bins_gev, species='mu-'):
         """
-        Converts a full differential recoil energy spectrum (dR/dEr) to a track length spectrum (dR/dx).
-
-        Args:
-            x_bins (np.ndarray): The bin edges for the output track length spectrum [nm].
-            recoil_data (np.lib.npyio.NpzFile): The loaded .npz file containing recoil energy spectra.
-            energy_bins_gev (np.ndarray): The energy bin edges [GeV].
-            species (str, optional): The particle species to simulate ('mu+', 'mu-', or 'neutron'). Defaults to 'mu-'.
-
-            
-        Returns:
-            dict: A dictionary of differential track rates (dR/dx) [events/kg/Myr/nm],
-                  keyed by nucleus/fragment symbol, including a "total" key.
+        Same as before, but recoil_data[fragment] may now have shape (T, n_recoil_bins)
+        instead of (n_recoil_bins,). scipy's interp1d(..., axis=-1) interpolates each
+        time-row independently in one call.
         """
         er_bins = recoil_data['Er_bins']
         er_mid_mev = er_bins[:-1] + np.diff(er_bins) / 2.0
@@ -1167,236 +1257,189 @@ class Paleodetector:
         tab_species = 'neutron' if species == 'secondary_neutron' else species
         all_fragments = self._get_all_fragments(energy_bins_gev[:-1], tab_species)
 
-        dRdx_by_nucleus = {}
-
-        dRdx_total = np.zeros(len(x_bins) - 1)
-
         x_mid_nm = x_bins[:-1] + np.diff(x_bins) / 2.0
-        
+
+        sample_frag = next((f for f in all_fragments if f in recoil_data and f != 'neutron'), None)
+
+        input_was_1d = sample_frag is not None and np.asarray(recoil_data[sample_frag]).ndim == 1
+
+        n_t = recoil_data[sample_frag].shape[0] if sample_frag is not None and recoil_data[sample_frag].ndim == 2 else 1
+
+        dRdx_by_nucleus = {}
+        dRdx_total = np.zeros((n_t, len(x_bins) - 1))
+
         for nuclide_name in all_fragments:
-            if nuclide_name not in recoil_data: continue
-            if nuclide_name == 'neutron': continue
-            dRdEr_mev = recoil_data[nuclide_name]
-            dRdEr_interp = interp1d(er_mid_mev, dRdEr_mev, bounds_error=False, fill_value=0.0)
+            if nuclide_name not in recoil_data or nuclide_name == 'neutron':
+                continue
+
+            dRdEr_mev = np.atleast_2d(recoil_data[nuclide_name])  # (T, n_recoil_bins)
+
+            dRdEr_interp = interp1d(
+                er_mid_mev, dRdEr_mev, axis=-1, bounds_error=False, fill_value=0.0
+            )
 
             nucleus_name = ''.join(filter(str.isalpha, nuclide_name))
-
             ion_z = element(nucleus_name).atomic_number
             srim_func, e, dee_dx, den_dx, x = self._load_srim_data(ion_z)
-            if not srim_func: continue
+            if not srim_func:
+                continue
 
             sorted_indices = np.argsort(x)
-            
-            x_to_e_func = interp1d(x[sorted_indices]*1e3, e[sorted_indices]*1e-3, bounds_error=False, fill_value=0.0)
-            x_to_dedx_func = interp1d(x[sorted_indices]*1e3, (dee_dx[sorted_indices]+den_dx[sorted_indices])*1e-6, bounds_error=False, fill_value=0.0)
-            
+            x_to_e_func = interp1d(x[sorted_indices] * 1e3, e[sorted_indices] * 1e-3,
+                                    bounds_error=False, fill_value=0.0)
+            x_to_dedx_func = interp1d(x[sorted_indices] * 1e3,
+                                    (dee_dx[sorted_indices] + den_dx[sorted_indices]) * 1e-6,
+                                    bounds_error=False, fill_value=0.0)
+
             e_at_x = x_to_e_func(x_mid_nm)
-            
-            dRdx_nucleus = dRdEr_interp(e_at_x) * x_to_dedx_func(x_mid_nm)
+
+            dRdx_nucleus = dRdEr_interp(e_at_x) * x_to_dedx_func(x_mid_nm)[None, :]
             dRdx_by_nucleus[nuclide_name] = dRdx_nucleus
             dRdx_total += dRdx_nucleus
-            
+
         dRdx_by_nucleus["total"] = dRdx_total
-        
+
+        if input_was_1d:
+            dRdx_by_nucleus = {name: arr[0] for name, arr in dRdx_by_nucleus.items()}
+ 
+
         return dRdx_by_nucleus
 
-    def calculate_particle_signal_spectrum(self, x_bins, t_kyr, energy_bins_gev, depth_mwe, total_simulated_particles=1e4, target_thickness_mm=TYPICAL_DEPTH_MM, species='mu-', nucleus="total", time_precision=0):
+
+    def calculate_particle_signal_spectrum(
+        self, x_bins, t_kyr_array, energy_bins_gev,
+        total_simulated_particles=1e4, target_thickness_mm=TYPICAL_DEPTH_MM,
+        species='mu-', nucleus="total",
+    ):
         """
-        Calculates the final particle-induced differential track length spectrum (dR/dx) for a given depth.
-
-        Args:
-            x_bins (np.ndarray): The bin edges for the output track length spectrum [nm].
-            t_kyr (float): The time in kiloyears for which to calculate the spectrum.
-            energy_bins_gev (np.ndarray): The energy bin edges [GeV].
-            target_thickness_mm (float): Target thickness [mm].
-            depth_mwe (float): Shielding depth [m.w.e.).
-            total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.
-            target_thickness_mm (float): Target thickness [mm].
-            species (str, optional): The particle species to simulate ('mu+', 'mu-', or 'neutron', 'secondary_neutron'). Defaults to 'mu-'.
-            nucleus (str, optional): Which nucleus/fragment spectrum to return ('total', 'all', or a specific symbol). Defaults to "total".
-            time_precision (int, optional): Decimal precision for time-based filenames. Defaults to 0 (O(kyr)).
-    
-        Returns:
-            np.ndarray or dict: The differential track rate(s) (dR/dx) [events/kg/Myr/nm].
+        Batch replacement for calculate_particle_signal_spectrum: takes the whole
+        t_kyr_array at once, returns dR/dx with shape (T, n_x_bins) [or dict of
+        those, per-nucleus].
         """
-        t_kyr = round(t_kyr, time_precision)
 
-        scenario_name = self.flux_history.baseline.name + "_" + "_".join(event["template"].name  +  "_" + str(-event["start_time_kyr"]) + "kyr" for event in self.flux_history.events)
+        depth_mwe_array = self._overburden_interpolator(t_kyr_array)
 
-        filepath = os.path.join(self.data_path, "processed_recoils", self.name, species, f'{scenario_name}_{t_kyr}kyr_{depth_mwe:.1f}mwe.npz')
-        if not os.path.exists(filepath):
+        scenario_name = self.flux_history.baseline.name + "_" + "_".join(
+            event["template"].name + "_" + str(-event["start_time_kyr"]) + "kyr"
+            for event in self.flux_history.events
+        )
+        filepath = os.path.join(
+            self.data_path, "processed_recoils", self.name, species, f"{scenario_name}_depth{depth_mwe_array[0]:.1f}_{depth_mwe_array[-1]:.1f}mwe.npz"
+        )
+
+        recoil_data = None
+        if os.path.exists(filepath):
+            cached = np.load(filepath)
+            if cached['t_kyr'].shape == t_kyr_array.shape and np.allclose(cached['t_kyr'], t_kyr_array):
+                recoil_data = cached
+
+        if recoil_data is None:
             if species == 'secondary_neutron':
-                self._process_secondary_geant4_data(t_kyr, energy_bins_gev, depth_mwe, total_simulated_particles, target_thickness_mm, secondary_neutrons_species=['mu-', 'mu+', 'neutron'])
+                recoil_data = self._process_secondary_geant4_data(
+                    t_kyr_array, energy_bins_gev, total_simulated_particles, target_thickness_mm,
+                )
             else:
-                self._process_geant4_data(t_kyr, energy_bins_gev, depth_mwe, total_simulated_particles, target_thickness_mm, species)
-
-        recoil_data = np.load(filepath)
+                recoil_data = self._process_geant4_data(
+                    t_kyr_array, energy_bins_gev, total_simulated_particles, target_thickness_mm, species,
+                )
 
         dRdx_at_depth = self._convert_recoil_to_track_spectrum(x_bins, recoil_data, energy_bins_gev, species)
-        
-        if nucleus=="total":
-            return dRdx_at_depth["total"]
-        elif nucleus=="all":
+
+        if nucleus == "total":
+            return dRdx_at_depth["total"]          # (T, n_x_bins)
+        elif nucleus == "all":
             return dRdx_at_depth
         else:
             return dRdx_at_depth[nucleus]
-    
-    def _integration_worker(self, args):
+
+
+    def integrate_particle_signal_spectrum(
+        self, x_bins, energy_bins_gev, sample_mass_kg,
+        exposure_window_kyr=None, flux_history=None, overburden_history=None,
+        steps=None, total_simulated_particles=1e4, target_thickness_mm=TYPICAL_DEPTH_MM,
+        x_grid=TRACK_LENGTH_BINS_NM, species='mu-',
+    ):
         """
-        Helper worker function for parallel processing that calculates track counts for a single timestep.
-
-        Args:
-            args (tuple): A tuple containing all necessary arguments for a single timestep calculation.
-
-        Returns:
-            np.ndarray: The number of tracks produced in each bin for this timestep.
+        Same public signature/behavior as before, but internally does ONE
+        vectorized batch call instead of a Pool over timesteps. Multiprocessing
+        now happens one level up, over species (see integrate_all_particles).
         """
-        x_bins, t_kyr, energy_bins_gev, \
-        total_simulated_particles, target_thickness_mm, species = args
-    
-        overburden_mwe_t_kyr = self._overburden_interpolator(t_kyr)
+        if flux_history is not None:
+            self.flux_history = flux_history
+        elif self.flux_history is None:
+            self.flux_history = FluxHistory(
+                baseline={"kind": "Baseline"}, template_dir=os.path.join(self.data_path, "flux_data")
+            )
 
-        dRdx_at_depth = self.calculate_particle_signal_spectrum(
-            x_bins, t_kyr, energy_bins_gev,
-            overburden_mwe_t_kyr, total_simulated_particles, target_thickness_mm, species
+        self._load_depth_interpolators('neutron' if species == 'secondary_neutron' else species)
+
+        if overburden_history is not None:
+            self._overburden_interpolator = self._interpolate_overburden_history(overburden_history)
+
+        if exposure_window_kyr is None:
+            exposure_window_kyr = self.total_age_kyr
+        if isinstance(exposure_window_kyr, (int, float)):
+            exposure_window_kyr = [0, exposure_window_kyr]
+
+        if not steps:
+            steps = len(self.flux_history.events) + int(
+                (exposure_window_kyr[1] - exposure_window_kyr[0])
+            )
+
+        t_kyr_array = np.linspace(exposure_window_kyr[0], exposure_window_kyr[1], steps)
+
+        dRdx_array = self.calculate_particle_signal_spectrum(
+            x_grid, t_kyr_array, energy_bins_gev,
+            total_simulated_particles, target_thickness_mm, species,
         )
 
-        return dRdx_at_depth, t_kyr
+        total_drdx = np.trapezoid(dRdx_array, t_kyr_array, axis=0)
 
-    def integrate_particle_signal_spectrum_parallel(
-                self, 
-                x_bins,  
-                energy_bins_gev, 
-                sample_mass_kg,
-                exposure_window_kyr=None, 
-                flux_history=None,
-                overburden_history=None, 
-                steps=None, 
-                total_simulated_particles=1e4, 
-                target_thickness_mm=TYPICAL_DEPTH_MM, 
-                x_grid=TRACK_LENGTH_BINS_NM, 
-                species='mu-'):
-            """
-            Calculates the final particle-induced track length spectrum by parallelizing the time integration.
+        spectrum_density = total_drdx * sample_mass_kg * 1e-3
 
-            Args:
-                x_bins (np.ndarray): The bin edges for the output track length spectrum [nm].
-                energy_bins_gev (np.ndarray): The energy bin edges [GeV].
-                sample_mass_kg (float): The mass of the sample in kilograms.
-                exposure_window_kyr (float): The total exposure time in kiloyears.
-                flux_history (FluxHistory, optional): The flux history to use. If given, replaces
-                    (and becomes) self.flux_history for this and later calls. If omitted, the
-                    instance's existing self.flux_history is used, falling back to a baseline-only
-                    FluxHistory (built/loaded on demand) if none has been set yet. Its own timeline
-                    runs 0 (present) -> negative (past); see self._flux_time_kyr for the mapping
-                    from this method's local t_kyr (0 = start of data taking, total_age_kyr = present).
-                steps (int, optional): Number of time steps for integration.
-                total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.        
-                target_thickness_mm (float, optional): Thickness of the target [mm]. Defaults to 0.001.
-                x_grid (np.ndarray, optional): The bin edges for the internal track length spectrum [nm]. Defaults to TRACK_LENGTH_BINS_NM.
-                species (str, optional): The particle species to simulate ('mu+', 'mu-', or 'neutron', 'secondary_neutron'). Defaults to 'mu-'.
-                
-            Returns:
-                np.ndarray: The total number of tracks expected in each track length bin.
-            """
+        internal_bin_widths = np.diff(x_grid)
+        cumulative_counts = np.concatenate(([0], np.cumsum(spectrum_density * internal_bin_widths)))
+        cdf_interp = interp1d(x_grid, cumulative_counts, kind='linear', bounds_error=False,
+                            fill_value=(0, cumulative_counts[-1]))
+        total_tracks = cdf_interp(x_bins[1:]) - cdf_interp(x_bins[:-1])
 
-            if flux_history is not None:
-                self.flux_history = flux_history
-            elif self.flux_history is None:
-                self.flux_history = FluxHistory(baseline={"kind": "Baseline"}, template_dir=os.path.join(self.data_path, "flux_data"))
+        return total_tracks
 
-            if species == 'secondary_neutron':
-                self._load_depth_interpolators('neutron')
-            else:
-                self._load_depth_interpolators(species)
 
-            if overburden_history is not None:
-                self._overburden_interpolator = self._interpolate_overburden_history(overburden_history)                
+    def integrate_all_particles(
+        self, x_bins, energy_bins_gev, sample_mass_kg,
+        exposure_window_kyr=None, flux_history=None, overburden_history=None,
+        steps=None, total_simulated_particles=1e4, target_thickness_mm=TYPICAL_DEPTH_MM,
+        species_list=('mu-', 'mu+', 'neutron', 'secondary_neutron'),
+    ):
+        """
+        Same public behavior, but the multiprocessing.Pool now parallelizes
+        across species (each worker does one fully-vectorized-over-time run)
+        instead of across timesteps.
+        """
 
-            if self.verbose>0:
-                print(f"Integrating the {species} signal in a {target_thickness_mm} mm slice of {self.name} with mass {sample_mass_kg*1e3} g, corresponding to {sample_mass_kg*1e3/(target_thickness_mm*0.1*self.config['density_g_cm3'])} cm2")
+        shared_kwargs = dict(
+            x_bins=x_bins, energy_bins_gev=energy_bins_gev, sample_mass_kg=sample_mass_kg,
+            exposure_window_kyr=exposure_window_kyr, flux_history=flux_history,
+            overburden_history=overburden_history, steps=steps,
+            total_simulated_particles=total_simulated_particles,
+            target_thickness_mm=target_thickness_mm,
+        )
 
-            if exposure_window_kyr is None:
-                exposure_window_kyr = self.total_age_kyr
+        tasks = [(self, dict(shared_kwargs, species=s)) for s in species_list]
 
-            if isinstance(exposure_window_kyr, (int, float)):
-                exposure_window_kyr = [0, exposure_window_kyr]
-            
-            if not steps:
-                steps = len(self.flux_history.events) + int((exposure_window_kyr[1] - exposure_window_kyr[0])/10.)
-            
-            t_kyr_array = np.linspace(exposure_window_kyr[0], exposure_window_kyr[1], steps)
-    
-            tasks = [(x_grid, t_kyr, energy_bins_gev,
-                    total_simulated_particles, target_thickness_mm, species)
-                    for t_kyr in t_kyr_array]
+        with Pool(processes=min(len(species_list), os.cpu_count() or 1)) as pool:
+            results = list(tqdm(pool.imap(_species_worker, tasks), total=len(tasks)))
 
-            with Pool() as pool:
-                results = list(tqdm(pool.imap(self._integration_worker, tasks), total=len(tasks)))
-            
-            drdx_array, t_kyr = zip(*results)
-            total_drdx = np.trapezoid(drdx_array, t_kyr, axis=0)
-            
-            spectrum_density = total_drdx * sample_mass_kg * 1e-3
-            
-            internal_bin_widths = np.diff(x_grid)
-            cumulative_counts = np.concatenate(([0], np.cumsum(spectrum_density * internal_bin_widths)))
-            
-            cdf_interp = interp1d(x_grid, cumulative_counts, kind='linear', bounds_error=False, fill_value=(0, cumulative_counts[-1]))
-            
-            total_tracks = cdf_interp(x_bins[1:]) - cdf_interp(x_bins[:-1])
+        total_tracks_by_species = dict(results)
+        total_tracks_by_species['total'] = sum(total_tracks_by_species.values())
 
-            return total_tracks
+        return total_tracks_by_species
 
-    def integrate_all_particles(self, 
-                x_bins, 
-                energy_bins_gev, 
-                sample_mass_kg,
-                exposure_window_kyr=None, 
-                flux_history=None,
-                overburden_history=None, 
-                steps=None, 
-                total_simulated_particles=1e4, 
-                target_thickness_mm=TYPICAL_DEPTH_MM, 
-                species_list=['mu-', 'mu+', 'neutron', 'secondary_neutron']):
-            """
-            Calculates the final particle-induced track length spectrum by integrating contributions from multiple species.
 
-            Args:
-                x_bins (np.ndarray): The bin edges for the output track length spectrum [nm].
-                energy_bins_gev (np.ndarray): The energy bin edges [GeV].
-                sample_mass_kg (float): The mass of the sample in kilograms.
-                exposure_window_kyr (float, optional): The total exposure time in kiloyears. Defaults to None.
-                flux_history (FluxHistory, optional): The flux history to use -- see
-                    integrate_particle_signal_spectrum_parallel for the timeline convention.
-                steps (int, optional): Number of time steps for integration. Defaults to 75*(number of flux events in flux_history).
-                total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.
-                target_thickness_mm (float, optional): Thickness of the target [mm]. Defaults to 0.001.
-                species_list (list, optional): List of particle species to consider. Defaults to ['mu-', 'mu+', 'neutron', 'secondary_neutron'].
-            Returns:
-                dict: A dictionary with keys being the species names and values being the total number of tracks expected in each track length bin from that species.
-            """
-
-            total_tracks_by_species = {}
-
-            for species in species_list:
-                if self.verbose>1:
-                    print(f"Processing species: {species}")
-                total_tracks = self.integrate_particle_signal_spectrum_parallel(
-                    x_bins=x_bins, 
-                    flux_history=flux_history, 
-                    energy_bins_gev=energy_bins_gev, 
-                    sample_mass_kg=sample_mass_kg,
-                    exposure_window_kyr=exposure_window_kyr,  
-                    overburden_history=overburden_history,
-                    steps=steps, 
-                    total_simulated_particles=total_simulated_particles, 
-                    target_thickness_mm=target_thickness_mm, 
-                    species=species
-                )
-                total_tracks_by_species[species] = total_tracks
-                total_tracks_all = total_tracks_all + total_tracks if 'total_tracks_all' in locals() else total_tracks
-
-            total_tracks_by_species['total'] = total_tracks_all
-
-            return total_tracks_by_species
+def _species_worker(self_and_args):
+    self, kwargs = self_and_args
+    species = kwargs.pop('species')
+    if self.verbose > 1:
+        print(f"Processing species: {species}")
+    return species, self.integrate_particle_signal_spectrum(species=species, **kwargs)
