@@ -16,6 +16,7 @@ from collections import defaultdict
 import re
 import random
 import xml.etree.ElementTree as ET
+import shutil
 from PIL import Image
 import segmentation_models_pytorch as smp
 import albumentations as A
@@ -392,6 +393,27 @@ def balance(a, b):
     return a[:n], b[:n]
 
 
+def resolve_num_workers(parallel=True):
+    """Resolve the number of parallel CPU workers to use, following the standard
+    OptimusPrimus compute policy: look for a GPU first; if one is available, a
+    small worker pool is used for CPU-side data prefetching (since the GPU handles
+    the heavy computation); if no GPU is available, computation falls back to being
+    spread across all available CPU cores unless `parallel` is False, in which case
+    a single core (no multiprocessing) is used.
+
+    Args:
+        parallel (bool, optional): Whether CPU-side parallel workers should be used
+            when no GPU is available. Defaults to True.
+
+    Returns:
+        int: Number of worker processes/threads to use.
+    """
+    cpu_count = os.cpu_count() or 1
+    if torch.cuda.is_available():
+        return min(4, cpu_count // 2) if cpu_count > 1 else 0
+    return cpu_count if parallel else 0
+
+
 def extract_instances(binary_mask):
     """Segments connected components from a binary mask and extracts geometrical properties.
 
@@ -559,7 +581,7 @@ def create_class_mask(image, mask, model, transform, device, threshold=None):
 class OptimusPrimus:
     """Production runtime inference management engine for the track identification architecture."""
     
-    def __init__(self, image_spec, seg_model_spec, cls_model_spec, image_config=None, tiles_subdir=TILES_SUBDIR, seg_model_config=None, class_model_config=None):
+    def __init__(self, image_spec, seg_model_spec, cls_model_spec, image_config=None, tiles_subdir=TILES_SUBDIR, seg_model_config=None, class_model_config=None, parallel=True):
         """Initializes structural paths, parameters, and system environments for production deployment.
 
         Args:
@@ -570,6 +592,10 @@ class OptimusPrimus:
             tiles_subdir (str, optional): Sub-path folder containing PNG tiled arrays. Defaults to TILES_SUBDIR.
             seg_model_config (dict, optional): Custom configurations overrides for the segmentation module. Defaults to None.
             class_model_config (dict, optional): Custom configurations overrides for the classification module. Defaults to None.
+            parallel (bool, optional): Standard compute policy toggle. A CUDA GPU is always used when
+                available; when no GPU is available, CPU-bound work (e.g. image quality analysis) is
+                spread across all available CPU cores unless `parallel` is set to False, in which case
+                it runs on a single core. Defaults to True.
 
         Raises:
             FileNotFoundError: If target image paths or designated check-point models do not exist on disk.
@@ -628,6 +654,7 @@ class OptimusPrimus:
         self.pixel_resolution_um_per_px = _image_config['pixel_resolution_um_per_px']
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.parallel = parallel
         self.seg_efficiency_table = None
         self.seg_cls_efficiency_table = None
 
@@ -869,12 +896,19 @@ class OptimusPrimus:
 
         Args:
             image_groups (dict): Structured coordinate maps holding candidate file groups.
-            max_workers (int, optional): Execution ceiling constraint limits for concurrent processes. Defaults to None.
+            max_workers (int, optional): Execution ceiling constraint limits for concurrent processes.
+                Defaults to None, in which case it is resolved from the standard compute policy
+                (`resolve_num_workers(self.parallel)`): a GPU present -> a small worker pool; no GPU
+                present -> all CPU cores, unless `self.parallel` is False, in which case a single
+                worker (sequential execution) is used.
             n_top_images (int, optional): Target selection quantity constraint per unique stack. Defaults to 5.
 
         Returns:
             defaultdict: Pruned image collection retaining high-clarity focal structures.
         """
+        if max_workers is None:
+            max_workers = resolve_num_workers(self.parallel) or 1
+
         group_scores = defaultdict(list)
         all_tasks = [(group_key, fpath) for group_key, file_paths in image_groups.items() for fpath in file_paths]
 
@@ -1035,7 +1069,9 @@ class OptimusPrimusTraining:
             """Initializes the dataset with specific patches and target matching labels.
 
             Args:
-                samples (list): Collection list containing matching tuples of (patch_array, label_int).
+                samples (list): Collection list containing matching tuples of (patch, label_int), where
+                    patch is either an in-memory patch_array (np.ndarray) or a file path (str) to a
+                    saved patch on disk, depending on how the dataset was generated.
                 transform (A.Compose, optional): Albumentations augmentations pipelines layer. Defaults to None.
             """
             self.samples = samples  
@@ -1061,6 +1097,10 @@ class OptimusPrimusTraining:
                     - label (torch.Tensor): Standard single-class float classification binary targets.
             """
             patch, label = self.samples[idx]
+            if isinstance(patch, str):
+                # Disk mode: sample is a file path, load it from disk.
+                patch = cv2.imread(patch)
+                patch = cv2.cvtColor(patch, cv2.COLOR_BGR2RGB)
             if self.transform:
                 augmented = self.transform(image=patch)
                 patch_tensor = augmented['image']
@@ -1136,7 +1176,7 @@ class OptimusPrimusTraining:
 
             return image_tensor, mask_tensor
     
-    def __init__(self, train_image_dir, image_spec, train_image=None, train_model_config=None, training_parameters=None, image_config=None, classification_train_folder=CLASSIFICATION_TRAIN_FOLDER, seg_model_config=None, class_model_config=None):
+    def __init__(self, train_image_dir, image_spec, train_image=None, train_model_config=None, training_parameters=None, image_config=None, classification_train_folder=CLASSIFICATION_TRAIN_FOLDER, seg_model_config=None, class_model_config=None, parallel=True):
         """Initializes system structures, data constraints, and dynamic paths using functional configurations.
 
         Args:
@@ -1149,6 +1189,11 @@ class OptimusPrimusTraining:
             classification_train_folder (dict, optional): Storage folder allocations for patch tracking. Defaults to CLASSIFICATION_TRAIN_FOLDER.
             seg_model_config (dict, optional): Folder mapping parameters configurations dictionary for segmentation. Defaults to None.
             class_model_config (dict, optional): Folder mapping parameters configurations dictionary for classification. Defaults to None.
+            parallel (bool, optional): Standard compute policy toggle. A CUDA GPU is always used when
+                available (with multiple GPUs automatically parallelized via `torch.nn.DataParallel`);
+                when no GPU is available, CPU-bound work (DataLoader workers) is spread across all
+                available CPU cores unless `parallel` is set to False, in which case it runs on a
+                single core. Defaults to True.
         """
         _train_image = TRAIN_IMAGE.copy()
         if train_image: _train_image.update(train_image)
@@ -1174,6 +1219,12 @@ class OptimusPrimusTraining:
         self.split_dir = os.path.join(self.image_dir, _train_image['data_split_subdir'])
         os.makedirs(self.split_dir, exist_ok=True)
         self.split_path = os.path.join(self.split_dir, _train_image['split_filename'])
+        
+        # Disk-mode classification patch folders, positioned as siblings of the
+        # original segmentation training tiles folder (self.image_dir).
+        _image_dir_parent = os.path.dirname(os.path.normpath(self.image_dir))
+        self.class_manual_track_dir = os.path.join(_image_dir_parent, 'manual_track')
+        self.class_manual_bkg_dir = os.path.join(_image_dir_parent, 'manual_bkg')
         
         self.image_extensions = _train_image['image_extensions']
         self.mask_extension = _train_image['mask_extension']
@@ -1216,14 +1267,25 @@ class OptimusPrimusTraining:
         # Strict Dynamic Naming Scheme Implementation: class_model_*encoder*_*image_spec*
         self.class_best_model_spec = f"class_model_{self.class_model_type}_{self.image_spec}"
         self.class_best_model_path = os.path.join(self.class_best_model_folder, f"{self.class_best_model_spec}.pth")
+
+        os.makedirs(self.seg_best_model_folder, exist_ok=True)
+        os.makedirs(self.class_best_model_folder, exist_ok=True)
         
         self.image_height = _image_config['img_height']
         self.image_width = _image_config['img_width']
         self.input_channels_config = _image_config['input_channels_config']
+        self.pixel_resolution_um_per_px = _image_config['pixel_resolution_um_per_px']
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.parallel = parallel
+        self.ngpu = torch.cuda.device_count() if torch.cuda.is_available() else 0
         
         self.seg_efficiency_table = None
         self.seg_cls_efficiency_table = None
+
+        if not os.path.isdir(self.image_dir):
+            raise FileNotFoundError(f"ERROR: Image directory not found at '{self.image_dir}'")
+        if not os.path.isdir(self.mask_dir):
+            raise FileNotFoundError(f"ERROR: Mask directory not found at '{self.mask_dir}'")
 
     def perform_seg_training(self):
         """Executes the standard end-to-end training routine for the semantic segmentation network.
@@ -1304,7 +1366,10 @@ class OptimusPrimusTraining:
                 current_epoch_val_metric = epoch_val_scores.get(self.seg_metric_to_monitor, -1.0) 
                 if current_epoch_val_metric > best_val_metric_value:
                     best_val_metric_value = current_epoch_val_metric
-                    torch.save(model.state_dict(), self.seg_best_model_path)
+                    if self.ngpu > 1:
+                        torch.save(model.module.state_dict(), self.seg_best_model_path)  # multi-GPU
+                    else:
+                        torch.save(model.state_dict(), self.seg_best_model_path)  # single GPU or CPU
                     print(f"Saved dynamic segmentation checkpoint: {self.seg_best_model_path}")
                     counter = 0
                 else:
@@ -1324,12 +1389,16 @@ class OptimusPrimusTraining:
         finally:
             print("\n--- Training Process Finished ---")
     
-    def perform_class_training(self, seg_model_path, seg_th=None):
+    def perform_class_training(self, seg_model_path, seg_th=None, keep_patches_in_memory=False):
         """Extracts candidate structural patches and trains the verification classifier network.
 
         Args:
             seg_model_path (str): File system source path to the pre-trained segmentation weight dependencies.
             seg_th (float, optional): Custom activation threshold limiting target crop evaluations. Defaults to None.
+            keep_patches_in_memory (bool, optional): If True, classification patches are extracted and
+                kept as in-memory arrays. If False (default), patches are saved to disk under
+                `self.class_manual_track_dir` / `self.class_manual_bkg_dir` and loaded from there.
+                Defaults to False.
 
         Returns:
             None
@@ -1340,7 +1409,7 @@ class OptimusPrimusTraining:
         train_losses, val_losses, val_accuracies, val_precisions, val_recalls, val_ious, val_dices = [], [], [], [], [], [], []
         best_dice = 0
 
-        class_trainset, class_valset = self._create_class_training_dataset(seg_model_path, threshold=seg_th)
+        class_trainset, class_valset = self._create_class_training_dataset(seg_model_path, threshold=seg_th, keep_patches_in_memory=keep_patches_in_memory)
         train_ds = self.TrackDataset(class_trainset, self._get_class_train_augs())
         val_ds = self.TrackDataset(class_valset, get_val_augs())
 
@@ -1598,7 +1667,7 @@ class OptimusPrimusTraining:
         train_dataset = self.SegmentationDataset(file_pairs=self.train_files, augmentations=train_augs_pipeline, preprocessing=preprocessing_pipeline, input_channels=self.input_channels_config)
         val_dataset = self.SegmentationDataset(file_pairs=self.val_files, augmentations=val_test_augs_pipeline, preprocessing=preprocessing_pipeline, input_channels=self.input_channels_config)
 
-        num_workers = min(4, os.cpu_count() // 2) if os.cpu_count() > 1 else 0
+        num_workers = resolve_num_workers(self.parallel)
         self.train_loader = DataLoader(train_dataset, batch_size=self.seg_batch_size, shuffle=True, num_workers=num_workers, pin_memory=torch.cuda.is_available(), drop_last=True)
         self.val_loader = DataLoader(val_dataset, batch_size=self.seg_batch_size, shuffle=False, num_workers=num_workers, pin_memory=torch.cuda.is_available(), drop_last=False)
         
@@ -1653,6 +1722,12 @@ class OptimusPrimusTraining:
         """
         model = smp.create_model(arch=self.seg_model_arc, encoder_name=self.seg_encoder, encoder_weights=self.seg_encoder_weights if weights_path is None else None, in_channels=self.input_channels_config, classes=1, activation=None)
         if weights_path and os.path.exists(weights_path): model.load_state_dict(torch.load(weights_path, map_location=self.device))
+
+        self.ngpu = torch.cuda.device_count()
+        if self.ngpu > 1:
+            print(f"Using {self.ngpu} GPUs")
+            model = torch.nn.DataParallel(model)
+
         model.to(self.device)
         return model
 
@@ -1674,7 +1749,12 @@ class OptimusPrimusTraining:
             state_dict = torch.load(cls_weights, map_location=self.device)
             if list(state_dict.keys())[0].startswith('module.'): state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
             model.load_state_dict(state_dict)
-        model.to(self.device)
+        model = model.to(self.device)
+
+        if torch.cuda.device_count() > 1:
+            print(f"Using {torch.cuda.device_count()} GPUs via DataParallel!")
+            model = nn.DataParallel(model)
+
         return model
 
     def _get_class_train_augs(self):
@@ -1712,17 +1792,25 @@ class OptimusPrimusTraining:
             pred_mask = (torch.sigmoid(pred) > threshold).cpu().numpy().astype(np.uint8).squeeze()
         return image, pred_mask
 
-    def _create_class_training_dataset(self, seg_model_path, threshold=None):
+    def _create_class_training_dataset(self, seg_model_path, threshold=None, keep_patches_in_memory=False):
         """Iterates over split input pools extracting candidate object fragments to compile classification inputs.
 
         Args:
             seg_model_path (str): File check-point resource mapping directory for segmentation models.
             threshold (float, optional): Detection parsing cutoff constraints coefficients. Defaults to None.
+            keep_patches_in_memory (bool, optional): If True, extracted patches are kept as in-memory
+                arrays and never written to disk. If False (default), patches are saved as PNG files
+                to disk under `self.class_manual_track_dir` / `self.class_manual_bkg_dir` (positioned
+                as siblings of the original segmentation training tiles folder), split into 'train'
+                and 'val' subfolders, and the returned samples reference those file paths instead of
+                in-memory arrays. Defaults to False.
 
         Returns:
             tuple: A tuple of lists containing:
-                - train_samples (list): Extracted training patch matrices collections.
-                - val_samples (list): Extracted verification patch matrices collections.
+                - train_samples (list): Extracted training samples as (patch, label) tuples, where
+                  patch is an in-memory array if `keep_patches_in_memory` is True, or a file path
+                  (str) otherwise.
+                - val_samples (list): Extracted verification samples in the same format.
         """
         if threshold is None: threshold = self.seg_threshold
         seg_model = self._create_segmentation_model(weights_path=seg_model_path)
@@ -1731,8 +1819,23 @@ class OptimusPrimusTraining:
         preprocessing_fn = smp.encoders.get_preprocessing_fn(self.seg_encoder, self.seg_encoder_weights)
         preprocessing = get_preprocessing(preprocessing_fn, self.image_height, self.image_width)
         
-        def extract_patches_from_set(file_list):
+        if not keep_patches_in_memory:
+            # Reset the disk-mode classification patch folders before regenerating them.
+            for folder in [self.class_manual_track_dir, self.class_manual_bkg_dir]:
+                if os.path.exists(folder):
+                    shutil.rmtree(folder)
+                os.makedirs(folder)
+        
+        def extract_patches_from_set(file_list, split_name):
             dataset_samples = []
+            
+            if not keep_patches_in_memory:
+                track_dir = os.path.join(self.class_manual_track_dir, split_name)
+                bkg_dir = os.path.join(self.class_manual_bkg_dir, split_name)
+                os.makedirs(track_dir, exist_ok=True)
+                os.makedirs(bkg_dir, exist_ok=True)
+                track_count, bkg_count = 0, 0
+            
             for img_path, mask_path in file_list:
                 img = cv2.imread(img_path)
                 img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -1740,88 +1843,171 @@ class OptimusPrimusTraining:
                 _, pred_mask = self._compute_seg_masks(img_path, seg_model, preprocessing, threshold=threshold)
                 
                 for r in regionprops(label(gt_mask > 0)):
-                    dataset_samples.append((get_64x64_centered_patch(img, gt_mask, r), 1))
+                    patch = get_64x64_centered_patch(img, gt_mask, r)
+                    if keep_patches_in_memory:
+                        dataset_samples.append((patch, 1))
+                    else:
+                        patch_path = os.path.join(track_dir, f"track_{track_count}.png")
+                        cv2.imwrite(patch_path, cv2.cvtColor(patch, cv2.COLOR_RGB2BGR))
+                        dataset_samples.append((patch_path, 1))
+                        track_count += 1
                 for r in regionprops(label(((pred_mask > 0) & (gt_mask == 0)).astype(np.uint8))):
-                    dataset_samples.append((get_64x64_centered_patch(img, pred_mask, r), 0))
+                    patch = get_64x64_centered_patch(img, pred_mask, r)
+                    if keep_patches_in_memory:
+                        dataset_samples.append((patch, 0))
+                    else:
+                        patch_path = os.path.join(bkg_dir, f"bkg_{bkg_count}.png")
+                        cv2.imwrite(patch_path, cv2.cvtColor(patch, cv2.COLOR_RGB2BGR))
+                        dataset_samples.append((patch_path, 0))
+                        bkg_count += 1
             return dataset_samples
 
-        return extract_patches_from_set(self.train_files), extract_patches_from_set(self.val_files)
+        return extract_patches_from_set(self.train_files, 'train'), extract_patches_from_set(self.val_files, 'val')
 
     def _match_instances_by_iou(self, gt_mask, pred_mask, iou_threshold, gt_log, pred_log):
-        """Cross-matches detected component boundaries against ground labels using IoU overlapping checks.
+        """
+        Match ground truth and predicted instances using Intersection over Union (IoU).
 
         Args:
-            gt_mask (np.ndarray): Standard reference single channel ground target map arrays.
-            pred_mask (np.ndarray): Execution generated operational single channel track prediction maps.
-            iou_threshold (float): Bounds constraint limit tracking hit intersections.
-            gt_log (list): Accumulator log storage capturing targets identification status.
-            pred_log (list): Accumulator log storage capturing background false positives tracking details.
+        ----------
+        gt_mask : np.ndarray
+            Ground truth binary mask.
 
-        Returns:
-            tuple: A tuple containing updated log lists: (gt_log, pred_log).
+        pred_mask : np.ndarray
+            Predicted binary mask.
+
+        iou_threshold : float
+            Minimum IoU required to consider a valid match between instances.
+
+        gt_log : list
+            List used to accumulate ground truth instance metadata and match status.
+
+        pred_log : list
+            List used to accumulate predicted instance metadata and match status.
+
+        Returns
+        -------
+        tuple
+            gt_log : list
+                Updated ground truth log with match labels.
+
+            pred_log : list
+                Updated prediction log with match labels.
         """
         gt_instances = extract_instances(gt_mask)
         pred_instances = extract_instances(pred_mask)
         
-        for gt_inst in gt_instances:
-            best_iou = 0.0
-            best_pred = None
-            gt_m = gt_inst['mask']
-            
-            for pred_inst in pred_instances:
-                if pred_inst['matched']: continue
-                intersection = np.logical_and(gt_m, pred_inst['mask']).sum()
-                union = np.logical_or(gt_m, pred_inst['mask']).sum()
-                iou = intersection / (union + 1e-8)
-                
+        for pred in pred_instances:
+            best_iou = 0
+            best_gt_idx = -1
+                            
+            for idx, gt in enumerate(gt_instances):
+                if gt['matched']:
+                    continue
+                                
+                intersection = np.logical_and(pred['mask'], gt['mask']).sum()
+                if intersection == 0: continue
+                            
+                union = np.logical_or(pred['mask'], gt['mask']).sum()
+                iou = intersection / union
+                            
                 if iou > best_iou:
                     best_iou = iou
-                    best_pred = pred_inst
-                    
-            if best_iou >= iou_threshold and best_pred is not None:
-                best_pred['matched'] = True
-                gt_log.append({'size': gt_inst['size'], 'detected': 1})
-            else:
-                gt_log.append({'size': gt_inst['size'], 'detected': 0})
-                
-        for pred_inst in pred_instances:
-            if not pred_inst['matched']: pred_log.append({'size': pred_inst['size'], 'false_positive': 1})
+                    best_gt_idx = idx
+                                
+            if best_iou >= iou_threshold:
+                pred['matched'] = True
+                gt_instances[best_gt_idx]['matched'] = True
+        
+        for gt in gt_instances:
+            gt_log.append({'len_um': gt['size'], 'is_true_positive': gt['matched']})
+        for pred in pred_instances:
+            pred_log.append({'len_um': pred['size'], 'is_true_positive': pred['matched']})
+            
         return gt_log, pred_log
 
     def _evaluate_efficiency(self, gt_log, pred_log, num_bins, mode):
-        """Assembles detection accuracy distributions partitioned into size-based grouping intervals.
+        """
+        Evaluate detection performance by computing size-binned recall and precision of detected tracks.
 
         Args:
-            gt_log (list): Complete list catalog capturing real object instances hits.
-            pred_log (list): Complete list catalog capturing structural false alarm updates details.
-            num_bins (int): Step configuration count increments dividing spatial domain groups.
-            mode (str): Branch type target identity tracking pipeline mode ('seg' or 'seg_class').
+        ----------
+        gt_log : list
+            List of ground truth instances with size and match information.
 
-        Returns:
-            dict: Evaluation logging directory data frame tables containing binned precision and recall analytics.
+        pred_log : list
+            List of predicted instances with size and match information.
+
+        num_bins : int
+            Number of size bins used for efficiency analysis.
+
+        mode : str
+            Inference mode specifying where to store results:
+            - 'seg' for segmentation-only results
+            - 'seg_class' for segmentation + classification results
+
+        Returns
+        -------
+        pandas.DataFrame
+            Table containing binned recall, precision, counts, and bin centers.
+
+        Raises
+        ------
+        ValueError
+            If `mode` is not 'seg' or 'seg_class'.
         """
-        df_gt, df_pred = pd.DataFrame(gt_log), pd.DataFrame(pred_log)
-        all_sizes = pd.concat([df_gt['size'], df_pred['size']], ignore_index=True) if not df_pred.empty else df_gt['size']
-        min_s, max_s = (0, 10) if all_sizes.empty else (all_sizes.min(), all_sizes.max())
-            
-        bins = np.linspace(min_s, max_s, num_bins + 1)
-        recalls, precisions = [], []
+        df_gt = pd.DataFrame(gt_log)
+        df_pred = pd.DataFrame(pred_log)
+
+        if df_gt.empty or df_pred.empty:
+            print("Warning: No instances found in Ground Truth or Predictions.")
+            return None
         
-        for i in range(num_bins):
-            low, high = bins[i], bins[i+1]
-            gt_in_bin = df_gt[(df_gt['size'] >= low) & (df_gt['size'] < high)] if not df_gt.empty else pd.DataFrame()
-            pred_in_bin = df_pred[(df_pred['size'] >= low) & (df_pred['size'] < high)] if not df_pred.empty else pd.DataFrame()
-            
-            tp = gt_in_bin['detected'].sum() if not gt_in_bin.empty else 0
-            fn = len(gt_in_bin) - tp if not gt_in_bin.empty else 0
-            fp = len(pred_in_bin) if not pred_in_bin.empty else 0
-            
-            recalls.append(tp / (tp + fn + 1e-8))
-            precisions.append(tp / (tp + fp + 1e-8))
-            
-        eff_df = pd.DataFrame({'Bin_start': bins[:-1], 'Bin_end': bins[1:], 'Bin_mid': bins[:-1] + np.diff(bins)/2.0, 'Recall': recalls, 'Precision': precisions})
-        eff_df.to_csv(self.seg_binned_efficiency_path if mode == 'seg' else self.seg_cls_binned_efficiency_path)
-        return {'efficiency_table': eff_df, 'bins': bins}
+        precision = df_pred['is_true_positive'].mean()
+        recall = df_gt['is_true_positive'].mean()
+        
+        print(f"Overall Recall :{df_gt['is_true_positive'].mean()}")
+        print(f"Overall Precision : {df_pred['is_true_positive'].mean()}")
+        print(f"True Positive : {df_gt['is_true_positive'].sum()}")
+        print(f"False Positive : {len(df_pred['is_true_positive']) - df_pred['is_true_positive'].sum()}")
+        print(f"False Negative : {len(df_gt['is_true_positive']) - df_gt['is_true_positive'].sum()}")        
+        
+        df_gt['size_bin'], bins = pd.qcut(df_gt['len_um'], q=num_bins, retbins=True, duplicates='drop')
+
+        df_pred['size_bin'] = pd.cut(df_pred['len_um'], bins=bins, include_lowest=True)
+        
+        recall_df = df_gt.groupby('size_bin', observed=False)['is_true_positive'].agg( Recall='mean', GT_Count='count')
+        precision_df = df_pred.groupby('size_bin', observed=False)['is_true_positive'].agg( Precision='mean',  Pred_Count='count' )
+        
+        bins_mid = (bins[:-1] + bins[1:]) / 2
+        
+        efficiency_table = pd.concat([recall_df, precision_df], axis=1)
+        efficiency_table.index.name = f'Size Bin ({ "um" if self.pixel_resolution_um_per_px else "px" })'
+        
+        efficiency_table['Bin_mid'] = bins_mid
+        
+        efficiency_table = efficiency_table.fillna(0)
+        
+        if mode == 'seg' :
+            efficiency_table.to_csv(self.seg_binned_efficiency_path)
+            self.seg_efficiency_table = efficiency_table
+            print(f"Overall segmentation Recall :{recall}")
+            print(f"Overall segmentation Precision : {precision}")
+        elif mode == 'seg_class' :
+            efficiency_table.to_csv(self.seg_cls_binned_efficiency_path)
+            self.seg_cls_efficiency_table = efficiency_table
+            print(f"Overall segmentation + classification Recall :{recall}")
+            print(f"Overall segmentation + classification Precision : {precision}")
+        else :
+            raise ValueError("mode need to be 'seg' or 'seg_class'")
+        
+        return {'precision': precision,
+                'recall': recall,
+                'efficiency_table': efficiency_table,
+                'df_gt': df_gt,
+                'df_pred': df_pred,
+                'bins': bins
+            }
 
     def _plot_verification(self, img, gt, pred, title_text):
         """Displays interactive execution verification grids using active visual frame overlays.
