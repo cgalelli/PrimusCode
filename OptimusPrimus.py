@@ -98,14 +98,6 @@ AUGMENTATION_PARAMETERS = {
     'BRIGHTNESS_CONTRAST_PROB': 0.4,
 }
 
-CLASSIFICATION_TRAIN_FOLDER = {
-    'train_track': 'Data/training-data/classification_train_data/class_train/tracks',
-    'train_bkg': 'Data/training-data/classification_train_data/class_train/background/',
-    'val_track': 'Data/training-data/classification_train_data/class_val/tracks/',
-    'val_bkg': 'Data/training-data/classification_train_data/class_val/background/',
-    'manual_track': 'Data/training-data/classification_train_data/manual_train_track',
-    'manual_bkg': 'Data/training-data/classification_train_data/manual_train_bkg',
-}
 
 TILES_SUBDIR = "tiles"
 
@@ -941,7 +933,7 @@ class OptimusPrimus:
             arch=self.seg_model_arc, encoder_name=self.seg_encoder, encoder_weights=None,
             in_channels=self.input_channels_config, classes=1, activation=None, 
         )
-        seg_model.load_state_dict(torch.load(self.seg_model_path, map_location=self.device))
+        seg_model.load_state_dict(torch.load(self.seg_model_path, map_location=self.device, weights_only=True))
         seg_model.to(self.device)
         seg_model.eval()
         return seg_model
@@ -958,7 +950,7 @@ class OptimusPrimus:
         in_features = cls_model.classifier.in_features
         cls_model.classifier = nn.Sequential(nn.Dropout(p=0.3), nn.Linear(in_features, 1))
 
-        state_dict = torch.load(self.cls_model_path, map_location=self.device)
+        state_dict = torch.load(self.cls_model_path, map_location=self.device, weights_only=True)
         if list(state_dict.keys())[0].startswith('module.'):
             state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
 
@@ -1176,7 +1168,7 @@ class OptimusPrimusTraining:
 
             return image_tensor, mask_tensor
     
-    def __init__(self, train_image_dir, image_spec, train_image=None, train_model_config=None, training_parameters=None, image_config=None, classification_train_folder=CLASSIFICATION_TRAIN_FOLDER, seg_model_config=None, class_model_config=None, parallel=True):
+    def __init__(self, train_image_dir, image_spec, train_image=None, train_model_config=None, training_parameters=None, image_config=None, seg_model_config=None, class_model_config=None, parallel=True):
         """Initializes system structures, data constraints, and dynamic paths using functional configurations.
 
         Args:
@@ -1186,7 +1178,6 @@ class OptimusPrimusTraining:
             train_model_config (dict, optional): Framework specifications configurations dictionary. Defaults to None.
             training_parameters (dict, optional): Parameter dictionary setting layer variables. Defaults to None.
             image_config (dict, optional): Base geometry configuration structures parameter array. Defaults to None.
-            classification_train_folder (dict, optional): Storage folder allocations for patch tracking. Defaults to CLASSIFICATION_TRAIN_FOLDER.
             seg_model_config (dict, optional): Folder mapping parameters configurations dictionary for segmentation. Defaults to None.
             class_model_config (dict, optional): Folder mapping parameters configurations dictionary for classification. Defaults to None.
             parallel (bool, optional): Standard compute policy toggle. A CUDA GPU is always used when
@@ -1250,10 +1241,6 @@ class OptimusPrimusTraining:
         self.seg_best_model_spec = f"seg_model_{self.seg_encoder}_{self.image_spec}"
         self.seg_best_model_path = os.path.join(self.seg_best_model_folder, f"{self.seg_best_model_spec}.pth")
         
-        self.class_train_track_dir = classification_train_folder['train_track']
-        self.class_train_bkg_dir = classification_train_folder['train_bkg']
-        self.class_val_track_dir = classification_train_folder['val_track']
-        self.class_val_bkg_dir = classification_train_folder['val_bkg']
         self.class_model_type = _train_model_config['class_model_type']
         
         self.class_boost_precision_weight = _training_parameters['class_boost_precision_weight']
@@ -1721,7 +1708,10 @@ class OptimusPrimusTraining:
             nn.Module: Built PyTorch segmentation model instance ready for deployment.
         """
         model = smp.create_model(arch=self.seg_model_arc, encoder_name=self.seg_encoder, encoder_weights=self.seg_encoder_weights if weights_path is None else None, in_channels=self.input_channels_config, classes=1, activation=None)
-        if weights_path and os.path.exists(weights_path): model.load_state_dict(torch.load(weights_path, map_location=self.device))
+        if weights_path:
+            if not os.path.exists(weights_path):
+                raise FileNotFoundError(f"ERROR: Segmentation checkpoint not found at '{weights_path}'")
+            model.load_state_dict(torch.load(weights_path, map_location=self.device, weights_only=True))
 
         self.ngpu = torch.cuda.device_count()
         if self.ngpu > 1:
@@ -1745,8 +1735,10 @@ class OptimusPrimusTraining:
         model.blocks[1][0].conv_dw.stride = (1, 1)
         in_features = model.classifier.in_features
         model.classifier = nn.Sequential(nn.Dropout(p=0.3), nn.Linear(in_features, 1))
-        if cls_weights and os.path.exists(cls_weights):
-            state_dict = torch.load(cls_weights, map_location=self.device)
+        if cls_weights:
+            if not os.path.exists(cls_weights):
+                raise FileNotFoundError(f"ERROR: Classification checkpoint not found at '{cls_weights}'")
+            state_dict = torch.load(cls_weights, map_location=self.device, weights_only=True)
             if list(state_dict.keys())[0].startswith('module.'): state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
             model.load_state_dict(state_dict)
         model = model.to(self.device)
