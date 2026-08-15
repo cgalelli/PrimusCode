@@ -98,6 +98,12 @@ AUGMENTATION_PARAMETERS = {
     'BRIGHTNESS_CONTRAST_PROB': 0.4,
 }
 
+# Soft ceiling for `keep_patches_in_memory=True`: above this many total 64x64x3 uint8
+# patches (~12 KB each), a warning is printed suggesting disk mode instead, since
+# in-memory mode holds every extracted patch for the whole train+val split in RAM
+# at once with no eviction.
+MAX_IN_MEMORY_PATCHES_WARNING = 50000
+
 
 TILES_SUBDIR = "tiles"
 
@@ -1459,7 +1465,10 @@ class OptimusPrimusTraining:
 
             if dice > best_dice:
                 best_dice = dice
-                torch.save(model.state_dict(), self.class_best_model_path)
+                if self.ngpu > 1:
+                    torch.save(model.module.state_dict(), self.class_best_model_path)  # multi-GPU
+                else:
+                    torch.save(model.state_dict(), self.class_best_model_path)  # single GPU or CPU
                 print(f"Saved dynamic classification checkpoint: {self.class_best_model_path}")
         
         df = pd.DataFrame({
@@ -1743,8 +1752,9 @@ class OptimusPrimusTraining:
             model.load_state_dict(state_dict)
         model = model.to(self.device)
 
-        if torch.cuda.device_count() > 1:
-            print(f"Using {torch.cuda.device_count()} GPUs via DataParallel!")
+        self.ngpu = torch.cuda.device_count()
+        if self.ngpu > 1:
+            print(f"Using {self.ngpu} GPUs via DataParallel!")
             model = nn.DataParallel(model)
 
         return model
@@ -1791,7 +1801,9 @@ class OptimusPrimusTraining:
             seg_model_path (str): File check-point resource mapping directory for segmentation models.
             threshold (float, optional): Detection parsing cutoff constraints coefficients. Defaults to None.
             keep_patches_in_memory (bool, optional): If True, extracted patches are kept as in-memory
-                arrays and never written to disk. If False (default), patches are saved as PNG files
+                arrays and never written to disk. A warning is printed if the combined train+val patch
+                count exceeds `MAX_IN_MEMORY_PATCHES_WARNING`, since this mode holds every patch in RAM
+                at once with no eviction. If False (default), patches are saved as PNG files
                 to disk under `self.class_manual_track_dir` / `self.class_manual_bkg_dir` (positioned
                 as siblings of the original segmentation training tiles folder), split into 'train'
                 and 'val' subfolders, and the returned samples reference those file paths instead of
@@ -1854,7 +1866,18 @@ class OptimusPrimusTraining:
                         bkg_count += 1
             return dataset_samples
 
-        return extract_patches_from_set(self.train_files, 'train'), extract_patches_from_set(self.val_files, 'val')
+        train_samples = extract_patches_from_set(self.train_files, 'train')
+        val_samples = extract_patches_from_set(self.val_files, 'val')
+
+        if keep_patches_in_memory:
+            total_patches = len(train_samples) + len(val_samples)
+            if total_patches > MAX_IN_MEMORY_PATCHES_WARNING:
+                approx_mb = total_patches * 64 * 64 * 3 / (1024 ** 2)
+                print(f"Warning: keep_patches_in_memory=True is holding {total_patches} patches "
+                      f"(~{approx_mb:.0f} MB) in RAM at once. Consider keep_patches_in_memory=False "
+                      f"to stream patches from disk instead if memory becomes a problem.")
+
+        return train_samples, val_samples
 
     def _match_instances_by_iou(self, gt_mask, pred_mask, iou_threshold, gt_log, pred_log):
         """
