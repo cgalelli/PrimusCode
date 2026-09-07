@@ -5,6 +5,8 @@ from scipy.interpolate import RegularGridInterpolator, interp1d
 
 DEFAULT_ANGLES_DEG = np.rad2deg(np.arccos(np.linspace(1.0, 0.0, 11)))
 
+DEFAULT_INTERACTION_MODEL = "EPOS-LHC-R"
+
 
 class FluxTemplate:
     """
@@ -125,6 +127,21 @@ class FluxTemplate:
         path = os.path.join(template_dir, name + ".npz")
         if os.path.exists(path) and not force_rebuild:
             return cls.load(path)
+
+        if params.get("kind") == "Flight":
+            duration_kyr = params["duration_kyr"]
+            tcut = params.get("tcut", 10.0 * duration_kyr)
+            n_t = params.get("n_t", 50)
+            t_since_kyr = np.linspace(0., tcut, n_t)
+            template = _build_altitude_template(
+                name=name,
+                h_obs_km=params["h_obs_km"],
+                duration_kyr=duration_kyr,
+                t_since_kyr=t_since_kyr,
+            )
+            template.save(path)
+            return template
+
         params_tuple = tuple(params.values())[1:]
         if params.get("kind") == "Baseline":
             model = None
@@ -137,8 +154,9 @@ class FluxTemplate:
         else:
             raise ValueError(f"Unknown template kind: {params.get('kind')}")
 
-        tcut = params.get("tcut", 500.)
-        t_since_kyr = np.linspace(0.001, tcut, 100) * 1.e3
+        tcut = params.get("tcut", 500.e3)
+
+        t_since_kyr = np.linspace(1., tcut, int(tcut/2.e2))
 
         template = _build_template(name=name, model=model, params=params_tuple, t_since_kyr=t_since_kyr)
         template.save(path)
@@ -243,6 +261,7 @@ except ImportError:
 class SNHG12(PrimaryFlux):
 
     def __init__(self, model):
+        super().__init__()
         self.name = 'Mod'
         self.sname = model
         self.t = model[0] * 3.154e7
@@ -286,7 +305,7 @@ class SNHG12(PrimaryFlux):
 
         self.nucleus_ids = list(self.params.keys())
 
-    def nucleus_flux(self, corsika_id, E):
+    def _nucleus_flux(self, corsika_id, E):
         corsika_id = self._find_nearby_id(corsika_id)
 
         flux = 0.0
@@ -304,6 +323,7 @@ class SNHG12(PrimaryFlux):
 class EgalHG12(PrimaryFlux):
 
     def __init__(self, model):
+        super().__init__()
         self.name = 'Mod'
         self.sname = model
         self.t = model[0] * 3.154e7
@@ -342,7 +362,7 @@ class EgalHG12(PrimaryFlux):
 
         self.nucleus_ids = list(self.params.keys())
 
-    def nucleus_flux(self, corsika_id, E):
+    def _nucleus_flux(self, corsika_id, E):
         corsika_id = self._find_nearby_id(corsika_id)
 
         flux = 0.0
@@ -402,11 +422,10 @@ class EnhancedHG12(PrimaryFlux):
 
         self.nucleus_ids = list(self.params.keys())
 
-    def nucleus_flux(self, corsika_id, E):
+    def _nucleus_flux(self, corsika_id, E):
         corsika_id = self._find_nearby_id(corsika_id)
         Z = self.z_map.get(corsika_id, 1)
 
-        # Base HG12 flux calculation
         flux = 0.0
         for i in range(1, 4):
             p = self.params[corsika_id][i]
@@ -430,8 +449,139 @@ class EnhancedHG12(PrimaryFlux):
             flux_e = flux
 
         return flux_e - flux
-    
-def _build_template(name=None, model=None, params=None, t_since_kyr=None, interaction_model="SIBYLL2.3c"):
+
+def _zenith_averaged_secondaries(mceq_run, angles=DEFAULT_ANGLES_DEG):
+    """
+    Zenith-averaged muon and neutron flux, in MCEq's raw (un-rescaled)
+    units, at `mceq_run`'s *current* configuration (interaction model,
+    primary model/params, density model -- whatever is already set on
+    the instance).
+
+    Deliberately returns un-rescaled, un-clipped arrays (no *1e4, no
+    low-energy neutron replacement) so callers can apply those in
+    whatever order they need -- `_build_template`'s steady and
+    transient branches historically did so at different points, and
+    this keeps both numerically identical to before.
+    """
+    e_grid = mceq_run.e_grid
+    muons = np.zeros_like(e_grid)
+    neutrons = np.zeros_like(e_grid)
+    for theta in angles:
+        mceq_run.set_theta_deg(float(theta))
+        mceq_run.solve()
+        muons += (mceq_run.get_solution('total_mu+', mag=0)
+                  + mceq_run.get_solution('total_mu-', mag=0))
+        neutrons += mceq_run.get_solution('n0', mag=0)
+    neutrons /= len(angles)
+    muons /= len(angles)
+    return muons, neutrons
+
+
+def _corrected_secondaries(mceq_run, angles=DEFAULT_ANGLES_DEG):
+    """
+    `_zenith_averaged_secondaries`, plus the unit rescale (m^-2 -> cm^-2)
+    and low-energy neutron fix used for the *steady* Baseline/SN/Egal/
+    Enhanced template and now also for `_build_altitude_template`:
+    below `e_grid[15]`, MCEq's neutron solution is replaced by a
+    power-law anchored at `e_grid[32]` (an existing, pre-batch-solve
+    correction, not something new introduced here), and both arrays are
+    floored at 1e-44 before being handed to FluxTemplate's log-space
+    interpolator.
+    """
+    e_grid = mceq_run.e_grid
+    muons, neutrons = _zenith_averaged_secondaries(mceq_run, angles)
+    muons = muons * 1e4
+    neutrons = neutrons * 1e4
+
+    E0 = e_grid[32]
+    g_pre = 2.6
+    anflux = (neutrons[32] / (np.exp(-1 / E0))) * np.exp(-1. / e_grid) * (e_grid / E0) ** (-g_pre)
+    neutrons = np.where(e_grid > e_grid[15], neutrons, anflux)
+
+    np.clip(neutrons, 1e-44, None, out=neutrons)
+    np.clip(muons, 1e-44, None, out=muons)
+    return muons, neutrons
+
+
+def _build_altitude_template(
+    name, h_obs_km, duration_kyr, t_since_kyr,
+    interaction_model=DEFAULT_INTERACTION_MODEL,
+):
+    """
+    Build a transient FluxTemplate for a brief change in atmospheric
+    sampling height (e.g. a flight), as opposed to a change
+    in the primary cosmic-ray spectrum (SN/Egal/Enhanced).
+
+    Args:
+        h_obs_km: observation height during the event, km above sea level.
+        duration_kyr: duration of the excursion, in genuine kyr (this is
+            the FluxTemplate-internal time axis -- see the note in
+            FluxHistory.flux about the kyr/Myr mismatch on the outer
+            `start_time_kyr` axis before picking a value here).
+        t_since_kyr: base time grid in kyr, e.g. `np.linspace(0., tcut, n)`;
+            densified automatically around the box edges.
+        interaction_model: hadronic interaction model. Defaults to
+            DEFAULT_INTERACTION_MODEL, matching `_build_template`.
+    """
+    import crflux.models as pm
+    import MCEq.core  # noqa: F401 -- import before `from MCEq import config`
+    from MCEq.core import MCEqRun
+    from MCEq import config
+
+    angles = DEFAULT_ANGLES_DEG
+
+    def _spectra():
+        mceq_run = MCEqRun(
+            interaction_model=interaction_model,
+            primary_model=(pm.HillasGaisser2012, "H3a"),
+            theta_deg=0.0,
+        )
+        e_grid = mceq_run.e_grid
+        muons, neutrons = _corrected_secondaries(mceq_run, angles)
+        return e_grid, muons, neutrons
+
+    e_grid, muons_ref, neutrons_ref = _spectra()
+
+    original_h_obs_m = config.h_obs
+    try:
+        config.h_obs = h_obs_km * 1.0e3
+        _, muons_alt, neutrons_alt = _spectra()
+    finally:
+        config.h_obs = original_h_obs_m
+
+    d_muons = muons_alt - muons_ref
+    d_neutrons = neutrons_alt - neutrons_ref
+
+    if np.any(d_muons < 0) or np.any(d_neutrons < 0):
+        import warnings
+        warnings.warn(
+            f"Flight template '{name}': the h_obs={h_obs_km} km run gives a "
+            "LOWER secondary flux than the reference run in some energy bins. "
+            "FluxTemplate clips to >=1e-300 before taking log10, so this "
+            "negative excess will be silently distorted rather than "
+            "represented correctly. Inspect d_muons/d_neutrons for this "
+            "template before trusting it."
+        )
+
+    t_since_kyr = np.asarray(t_since_kyr, dtype=float)
+    edge_eps = max(1e-9, 1e-3 * duration_kyr)
+    grid = np.unique(np.concatenate([
+        t_since_kyr[t_since_kyr >= 0.0],
+        [0.0, duration_kyr, duration_kyr + edge_eps],
+    ]))
+    on = (grid < duration_kyr).astype(float)
+
+    species_grids = {
+        "mu+": np.outer(on, d_muons / 2.0),
+        "mu-": np.outer(on, d_muons / 2.0),
+        "neutron": np.outer(on, d_neutrons),
+        "primary": np.zeros((len(grid), len(e_grid))),
+    }
+
+    return FluxTemplate(name, e_grid, species_grids, t_since_kyr=grid)
+
+
+def _build_template(name=None, model=None, params=None, t_since_kyr=None, interaction_model=DEFAULT_INTERACTION_MODEL):
 
     import crflux.models as pm
     from MCEq.core import MCEqRun
@@ -461,29 +611,8 @@ def _build_template(name=None, model=None, params=None, t_since_kyr=None, intera
 
         mceq_run.set_primary_model(model, params)
 
-        muons = np.zeros_like(e_grid)
-        neutrons = np.zeros_like(e_grid)
-
-        for theta in angles:
-            mceq_run.set_theta_deg(theta)
-            mceq_run.solve()
-            muons += (mceq_run.get_solution('total_mu+', mag=0)
-                    + mceq_run.get_solution('total_mu-', mag=0)) * 1e4
-            neutrons += mceq_run.get_solution('n0', mag=0) * 1e4
-        neutrons /= len(angles)
-        muons /= len(angles)
+        muons, neutrons = _corrected_secondaries(mceq_run, angles)
         primary = model(params).total_flux(e_grid) * 1e4
-
-        E0 = e_grid[32]
-
-        g_pre = 2.6 
-
-        anflux = (neutrons[32] / (np.exp(-1 / E0))) * np.exp(-1. / e_grid) * (e_grid / E0) ** (-g_pre)
-        neutrons = np.where(e_grid > e_grid[15], neutrons, anflux)
-
-
-        np.clip(neutrons, 1e-44, None, out=neutrons)
-        np.clip(muons, 1e-44, None, out=muons)
 
     else:
         muons, neutrons, primary = [], [], []
@@ -494,17 +623,7 @@ def _build_template(name=None, model=None, params=None, t_since_kyr=None, intera
 
             mceq_run.set_primary_model(model, age_params)
 
-            muons_t = np.zeros_like(e_grid)
-            neutrons_t = np.zeros_like(e_grid)
-
-            for theta in angles:
-                mceq_run.set_theta_deg(theta)
-                mceq_run.solve()
-                muons_t += (mceq_run.get_solution('total_mu+', mag=0)
-                                + mceq_run.get_solution('total_mu-', mag=0))
-                neutrons_t += mceq_run.get_solution('n0', mag=0)
-            neutrons_t /= len(angles)
-            muons_t /= len(angles)
+            muons_t, neutrons_t = _zenith_averaged_secondaries(mceq_run, angles)
             primary_t = model(age_params).total_flux(e_grid)
 
             E0 = e_grid[32]
