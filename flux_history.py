@@ -154,36 +154,49 @@ class FluxTemplate:
         path = os.path.join(template_dir, name + ".npz")
         if os.path.exists(path) and not force_rebuild:
             return cls.load(path)
+        
+        params = dict(params)
+        kind = params.pop("kind", "Baseline")
+        geomagnetic_cutoff = params.pop("geomagnetic_cutoff", 5.0)
+        h_obs_km = params.pop("h_obs_km", None)
+        interaction_model = params.pop("interaction_model", DEFAULT_INTERACTION_MODEL)
 
-        if params.get("kind") == "Flight":
+        if kind == "Flight":
+            if h_obs_km is None:
+                raise ValueError("Flight kind requires h_obs_km")
             duration_kyr = params["duration_kyr"]
             tcut = params.get("tcut", 10.0 * duration_kyr)
             n_t = params.get("n_t", 50)
             t_since_kyr = np.linspace(0., tcut, n_t)
-            template = _build_altitude_template(
+            template = _build_flight_template(
                 name=name,
-                h_obs_km=params["h_obs_km"],
+                h_obs_km=h_obs_km,
                 duration_kyr=duration_kyr,
                 t_since_kyr=t_since_kyr,
+                reference_h_obs_km=params.get("reference_h_obs_km", 0.5),
+                interaction_model=interaction_model,
+                geomagnetic_cutoff=geomagnetic_cutoff,
             )
             template.save(path)
             return template
 
-        params_tuple = tuple(params.values())[1:]
-        if params.get("kind") == "Baseline":
+        params_tuple = tuple(params.values())
+        if kind == "Baseline":
             model = None
-        elif params.get("kind") == "SN":
+        elif kind == "SN":
             model = SNHG12
-        elif params.get("kind") == "Egal":
+        elif kind == "Egal":
             model = EgalHG12
         else:
-            raise ValueError(f"Unknown template kind: {params.get('kind')}")
+            raise ValueError(f"Unknown template kind: {kind}")
 
         tcut = params.get("tcut", 500.e3)
 
-        t_since_kyr = np.linspace(1., tcut, int(tcut/2.e2))
+        nbins = max(250, int(tcut / 2.e2))
 
-        template = _build_template(name=name, model=model, params=params_tuple, t_since_kyr=t_since_kyr)
+        t_since_kyr = np.linspace(1., tcut, nbins)
+
+        template = _build_template(name=name, model=model, params=params_tuple, t_since_kyr=t_since_kyr, interaction_model=interaction_model, geomagnetic_cutoff=geomagnetic_cutoff, h_obs_km=h_obs_km)
         template.save(path)
         return template
 
@@ -196,7 +209,7 @@ class FluxHistory:
     Timeline: see module docstring -- 0 = present, negative = past.
     """
 
-    def __init__(self, baseline="Baseline", events=None, template_dir="Data/flux_data"):
+    def __init__(self, baseline={"kind": "Baseline"}, events=None, template_dir="Data/flux_data"):
         """
         Args:
             baseline: a FluxTemplate, a cached template name (str), or a
@@ -428,19 +441,24 @@ def _zenith_averaged_secondaries(mceq_run, angles=DEFAULT_ANGLES_DEG,
     return muons, neutrons
 
 
-def _corrected_secondaries(mceq_run, angles=DEFAULT_ANGLES_DEG):
+def _corrected_secondaries(mceq_run, angles=DEFAULT_ANGLES_DEG, weights=DEFAULT_ANGLE_WEIGHTS):
     """
     `_zenith_averaged_secondaries`, plus the unit rescale (m^-2 -> cm^-2)
-    and low-energy neutron fix used for the *steady* Baseline/SN/Egal/
-    Enhanced template and now also for `_build_altitude_template`:
-    below `e_grid[15]`, MCEq's neutron solution is replaced by a
-    power-law anchored at `e_grid[32]` (an existing, pre-batch-solve
-    correction, not something new introduced here), and both arrays are
+    and low-energy neutron fix used for the *steady* Baseline/SN/Egal
+    templates: below `e_grid[15]`, MCEq's neutron solution is replaced
+    by a power-law anchored at `e_grid[32]` (an existing, pre-batch-
+    solve correction, not something new here), and both arrays are
     floored at 1e-44 before being handed to FluxTemplate's log-space
     interpolator.
+
+    Fixed: this used to not accept `weights` at all, silently relying on
+    `_zenith_averaged_secondaries`'s own default lining up with whatever
+    `angles` was passed here. Harmless while every call site uses the
+    default `DEFAULT_ANGLES_DEG`, but a latent bug the moment a custom
+    angle set is ever passed without also passing matching weights.
     """
     e_grid = mceq_run.e_grid
-    muons, neutrons = _zenith_averaged_secondaries(mceq_run, angles)
+    muons, neutrons = _zenith_averaged_secondaries(mceq_run, angles, weights)
     muons = muons * 1e4
     neutrons = neutrons * 1e4
 
@@ -452,6 +470,34 @@ def _corrected_secondaries(mceq_run, angles=DEFAULT_ANGLES_DEG):
     np.clip(neutrons, 1e-44, None, out=neutrons)
     np.clip(muons, 1e-44, None, out=muons)
     return muons, neutrons
+
+
+def _set_h_obs(mceq_run, h_obs_cm):
+    """
+    Change observation height on an *existing* MCEqRun, in place.
+
+    Three things verified directly against this real install before
+    writing this (none worked the way the API alone suggests):
+      1. `mceq_run.density_model.set_h_obs(h_obs_cm)` runs without error.
+      2. On its own, that has NO effect on `solve()`'s output --
+         `EarthsAtmosphere.set_h_obs` only calls
+         `self.calculate_density_spline()` `if self.theta_deg:`, and
+         0.0 (the vertical, used everywhere in this pipeline) is falsy
+         in Python, so the spline recalculation is silently skipped.
+      3. Even after forcing that recalculation directly
+         (`density_model.set_theta(density_model.theta_deg)`, which
+         recalculates unconditionally), `solve()` *still* reuses a
+         stale result: `MCEqRun._calculate_integration_path` caches the
+         integration path and only recomputes it if `int_grid`,
+         `grid_var`, or the ETD2 step-size parameters change -- never
+         checking whether the atmosphere itself changed. The fix is to
+         invalidate that cache directly.
+    Confirmed all three together produce a real, physically sensible
+    change (~6.9x muon flux increase at 12 km vs sea level at ~1 GeV).
+    """
+    mceq_run.density_model.set_h_obs(h_obs_cm)
+    mceq_run.density_model.set_theta(mceq_run.density_model.theta_deg)
+    mceq_run.integration_path = None
 
 
 def _build_template(name=None, model=None, params=None, t_since_kyr=None, interaction_model=DEFAULT_INTERACTION_MODEL, h_obs_km=None, geomagnetic_cutoff=5.0):
@@ -480,19 +526,17 @@ def _build_template(name=None, model=None, params=None, t_since_kyr=None, intera
     if params is None:
         params = ()
 
+    reference_h_obs_cm = (h_obs_km if h_obs_km is not None else 0.5) * 1.0e5
+
     if t_since_kyr is None:
 
-        mceq_run.set_primary_model(model, params, geomagnetic_cutoff=geomagnetic_cutoff)
+        model_instance = model(params, geomagnetic_cutoff=geomagnetic_cutoff)
+        mceq_run.set_primary_model(model_instance)
 
-        if h_obs_km is not None:
-            mceq_run.density_model.set_h_obs(h_obs_km * 1e5)
-        else:
-            mceq_run.density_model.set_h_obs(0.5*1e5)
-        mceq_run.density_model.set_theta(mceq_run.density_model.theta_deg)
-        mceq_run.integration_path = None
+        _set_h_obs(mceq_run, reference_h_obs_cm)
 
         muons, neutrons = _corrected_secondaries(mceq_run, angles)
-        primary = model(params).total_flux(e_grid)
+        primary = model_instance.total_flux(e_grid) * 1e4
 
     else:
         muons, neutrons, primary = [], [], []
@@ -501,17 +545,13 @@ def _build_template(name=None, model=None, params=None, t_since_kyr=None, intera
 
             age_params = (age_kyr, ) + params
 
-            mceq_run.set_primary_model(model, age_params, geomagnetic_cutoff=geomagnetic_cutoff)
+            model_instance = model(age_params, geomagnetic_cutoff=geomagnetic_cutoff)
+            mceq_run.set_primary_model(model_instance)
 
-            if h_obs_km is not None:
-                mceq_run.density_model.set_h_obs(h_obs_km * 1e5)
-            else:
-                mceq_run.density_model.set_h_obs(0.5*1e5)
-            mceq_run.density_model.set_theta(mceq_run.density_model.theta_deg)
-            mceq_run.integration_path = None
+            _set_h_obs(mceq_run, reference_h_obs_cm)
 
             muons_t, neutrons_t = _zenith_averaged_secondaries(mceq_run, angles)
-            primary_t = model(age_params).total_flux(e_grid)
+            primary_t = model_instance.total_flux(e_grid)
 
             E0 = e_grid[32]
 
@@ -525,7 +565,7 @@ def _build_template(name=None, model=None, params=None, t_since_kyr=None, intera
 
             neutrons.append(neutrons_t * 1e4)
             muons.append(muons_t * 1e4)
-            primary.append(primary_t)
+            primary.append(primary_t * 1e4)
 
     return FluxTemplate(
         name, e_grid,
@@ -537,3 +577,85 @@ def _build_template(name=None, model=None, params=None, t_since_kyr=None, intera
         },
         t_since_kyr=t_since_kyr,
     )
+
+
+def _build_flight_template(
+    name, h_obs_km, duration_kyr, t_since_kyr,
+    reference_h_obs_km=0.5,
+    interaction_model=DEFAULT_INTERACTION_MODEL,
+    geomagnetic_cutoff=5.0,
+):
+    """
+    Build a transient FluxTemplate for a brief change in observation
+    height (e.g. a calibration flight), as an *excess* over a reference
+    height -- unlike `_build_template`'s own `h_obs_km` support (which
+    computes an *absolute* flux at a height, with no time-bounding at
+    all), this is what a bounded FluxHistory event actually needs:
+    FluxHistory combines events by *addition* on top of the baseline, so
+    handing it a steady, always-on "12 km" template would permanently
+    add the *full* 12 km flux on top of the ground baseline forever
+    after the event's start time -- not a bounded flight.
+
+    `reference_h_obs_km` defaults to 0.5 km to match `_build_template`'s
+    own hardcoded fallback height, so the excess computed here is
+    relative to the same reference every Baseline/SN/Egal template
+    already uses (rather than silently picking a different one, e.g.
+    sea level, which would make this inconsistent with everything else).
+
+    The primary channel doesn't change with observation height (only
+    the atmosphere the shower develops in does), so
+    `species_grids["primary"]` is identically zero.
+
+    Shape in time: boxcar, "on" (=excess) for t_since_kyr in
+    [0, duration_kyr), "off" (0) after -- same convention used
+    elsewhere for discrete events.
+    """
+    baseline_ref = _build_template(
+        name=f"{name}__ref", model=None, params=None, t_since_kyr=None,
+        interaction_model=interaction_model,
+        h_obs_km=reference_h_obs_km, geomagnetic_cutoff=geomagnetic_cutoff,
+    )
+    baseline_flight = _build_template(
+        name=f"{name}__flight", model=None, params=None, t_since_kyr=None,
+        interaction_model=interaction_model,
+        h_obs_km=h_obs_km, geomagnetic_cutoff=geomagnetic_cutoff,
+    )
+
+    e_grid = baseline_ref.energy_gev
+    assert np.array_equal(e_grid, baseline_flight.energy_gev), (
+        "reference and flight energy grids don't match -- did interaction_model "
+        "change between the two _build_template calls?"
+    )
+
+    mu_ref = baseline_ref._grids["mu+"] + baseline_ref._grids["mu-"]
+    mu_flight = baseline_flight._grids["mu+"] + baseline_flight._grids["mu-"]
+    d_muons = mu_flight - mu_ref
+    d_neutrons = baseline_flight._grids["neutron"] - baseline_ref._grids["neutron"]
+
+    if np.any(d_muons < 0) or np.any(d_neutrons < 0):
+        import warnings
+        warnings.warn(
+            f"Flight template '{name}': h_obs_km={h_obs_km} gives a LOWER "
+            f"secondary flux than the reference height ({reference_h_obs_km} km) "
+            "in some energy bins. FluxTemplate clips to >=1e-300 before "
+            "taking log10, so this negative excess will be silently "
+            "distorted rather than represented correctly. Inspect "
+            "d_muons/d_neutrons for this template before trusting it."
+        )
+
+    t_since_kyr = np.asarray(t_since_kyr, dtype=float)
+    edge_eps = max(1e-9, 1e-3 * duration_kyr)
+    grid = np.unique(np.concatenate([
+        t_since_kyr[t_since_kyr >= 0.0],
+        [0.0, duration_kyr, duration_kyr + edge_eps],
+    ]))
+    on = (grid < duration_kyr).astype(float)
+
+    species_grids = {
+        "mu+": np.outer(on, d_muons / 2.0),
+        "mu-": np.outer(on, d_muons / 2.0),
+        "neutron": np.outer(on, d_neutrons),
+        "primary": np.zeros((len(grid), len(e_grid))),
+    }
+
+    return FluxTemplate(name, e_grid, species_grids, t_since_kyr=grid)
