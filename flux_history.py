@@ -2,30 +2,32 @@ import os
 
 import numpy as np
 from scipy.interpolate import RegularGridInterpolator, interp1d
+from scipy.special import roots_jacobi
 
 def _hemisphere_gauss_legendre(n_angles):
     """
-    Zenith angles (degrees) and weights for a solid-angle-weighted
-    hemisphere average, i.e. integrating some f(theta) against
-    dOmega/2*pi = d(cos theta) from cos(theta)=1 (theta=0, vertical) to
-    cos(theta)=0 (theta=90 deg, horizon), via Gauss-Legendre quadrature
-    in mu=cos(theta).
- 
-    This replaces the previous scheme (`n_angles` points equally spaced
-    in mu, averaged with equal weight 1/n_angles), which is only a basic
-    Riemann-sum-like approximation. Verified numerically against a known
-    analytic integral (integral of mu**3 over [0,1] = 0.25): the old
-    scheme is still off by 2.5% at 11 points, while Gauss-Legendre is
-    exact to machine precision at 11 points (and already exact at 5
-    points for a cubic test function, since GL quadrature with n nodes
-    is exact for polynomials up to degree 2n-1).
- 
+    Zenith angles (degrees) and weights for the Lambertian (cosine-
+    projected) hemisphere flux integral,
+
+        Phi_horiz = integral of I(theta) * cos(theta) dOmega
+                  = 2*pi * integral_0^1 I(mu) * mu dmu,   mu = cos(theta)
+
+    Uses Gauss-Jacobi quadrature (weight function mu on [0,1]) so the
+    extra factor of mu is absorbed into the quadrature itself, keeping
+    the same machine-precision exactness (up to degree 2*n_angles-1)
+    the previous Gauss-Legendre scheme had. Verified against
+    int_0^1 mu**k * mu dmu for k up to 21, and against the isotropic
+    check (Phi_horiz = pi for constant I=1).
+
     Returns:
-      (theta_deg, weights): weights sum to 1.
+      (theta_deg, weights): weights sum to pi (not 1). Summing MCEq's
+      raw solution (cm^-2 s^-1 sr^-1 GeV^-1) against these weights
+      therefore gives the flux crossing a horizontal target directly,
+      in cm^-2 s^-1 GeV^-1 -- no further sr^-1 or area rescale needed.
     """
-    mu_nodes, mu_weights = np.polynomial.legendre.leggauss(n_angles)
-    mu = 0.5 * (mu_nodes + 1.0)
-    weights = 0.5 * mu_weights
+    x, w_jacobi = roots_jacobi(n_angles, alpha=0, beta=1)
+    mu = 0.5 * (x + 1.0)
+    weights = 0.5 * np.pi * w_jacobi
     theta_deg = np.rad2deg(np.arccos(mu))
     return theta_deg, weights
  
@@ -160,25 +162,6 @@ class FluxTemplate:
         geomagnetic_cutoff = params.pop("geomagnetic_cutoff", 5.0)
         h_obs_km = params.pop("h_obs_km", None)
         interaction_model = params.pop("interaction_model", DEFAULT_INTERACTION_MODEL)
-
-        if kind == "Flight":
-            if h_obs_km is None:
-                raise ValueError("Flight kind requires h_obs_km")
-            duration_kyr = params["duration_kyr"]
-            tcut = params.get("tcut", 10.0 * duration_kyr)
-            n_t = params.get("n_t", 50)
-            t_since_kyr = np.linspace(0., tcut, n_t)
-            template = _build_flight_template(
-                name=name,
-                h_obs_km=h_obs_km,
-                duration_kyr=duration_kyr,
-                t_since_kyr=t_since_kyr,
-                reference_h_obs_km=params.get("reference_h_obs_km", 0.5),
-                interaction_model=interaction_model,
-                geomagnetic_cutoff=geomagnetic_cutoff,
-            )
-            template.save(path)
-            return template
 
         params_tuple = tuple(params.values())
         if kind == "Baseline":
@@ -536,7 +519,7 @@ def _build_template(name=None, model=None, params=None, t_since_kyr=None, intera
         _set_h_obs(mceq_run, reference_h_obs_cm)
 
         muons, neutrons = _corrected_secondaries(mceq_run, angles)
-        primary = model_instance.total_flux(e_grid) * 1e4
+        primary = model_instance.total_flux(e_grid)
 
     else:
         muons, neutrons, primary = [], [], []
@@ -565,7 +548,7 @@ def _build_template(name=None, model=None, params=None, t_since_kyr=None, intera
 
             neutrons.append(neutrons_t * 1e4)
             muons.append(muons_t * 1e4)
-            primary.append(primary_t * 1e4)
+            primary.append(primary_t)
 
     return FluxTemplate(
         name, e_grid,
@@ -577,85 +560,3 @@ def _build_template(name=None, model=None, params=None, t_since_kyr=None, intera
         },
         t_since_kyr=t_since_kyr,
     )
-
-
-def _build_flight_template(
-    name, h_obs_km, duration_kyr, t_since_kyr,
-    reference_h_obs_km=0.5,
-    interaction_model=DEFAULT_INTERACTION_MODEL,
-    geomagnetic_cutoff=5.0,
-):
-    """
-    Build a transient FluxTemplate for a brief change in observation
-    height (e.g. a calibration flight), as an *excess* over a reference
-    height -- unlike `_build_template`'s own `h_obs_km` support (which
-    computes an *absolute* flux at a height, with no time-bounding at
-    all), this is what a bounded FluxHistory event actually needs:
-    FluxHistory combines events by *addition* on top of the baseline, so
-    handing it a steady, always-on "12 km" template would permanently
-    add the *full* 12 km flux on top of the ground baseline forever
-    after the event's start time -- not a bounded flight.
-
-    `reference_h_obs_km` defaults to 0.5 km to match `_build_template`'s
-    own hardcoded fallback height, so the excess computed here is
-    relative to the same reference every Baseline/SN/Egal template
-    already uses (rather than silently picking a different one, e.g.
-    sea level, which would make this inconsistent with everything else).
-
-    The primary channel doesn't change with observation height (only
-    the atmosphere the shower develops in does), so
-    `species_grids["primary"]` is identically zero.
-
-    Shape in time: boxcar, "on" (=excess) for t_since_kyr in
-    [0, duration_kyr), "off" (0) after -- same convention used
-    elsewhere for discrete events.
-    """
-    baseline_ref = _build_template(
-        name=f"{name}__ref", model=None, params=None, t_since_kyr=None,
-        interaction_model=interaction_model,
-        h_obs_km=reference_h_obs_km, geomagnetic_cutoff=geomagnetic_cutoff,
-    )
-    baseline_flight = _build_template(
-        name=f"{name}__flight", model=None, params=None, t_since_kyr=None,
-        interaction_model=interaction_model,
-        h_obs_km=h_obs_km, geomagnetic_cutoff=geomagnetic_cutoff,
-    )
-
-    e_grid = baseline_ref.energy_gev
-    assert np.array_equal(e_grid, baseline_flight.energy_gev), (
-        "reference and flight energy grids don't match -- did interaction_model "
-        "change between the two _build_template calls?"
-    )
-
-    mu_ref = baseline_ref._grids["mu+"] + baseline_ref._grids["mu-"]
-    mu_flight = baseline_flight._grids["mu+"] + baseline_flight._grids["mu-"]
-    d_muons = mu_flight - mu_ref
-    d_neutrons = baseline_flight._grids["neutron"] - baseline_ref._grids["neutron"]
-
-    if np.any(d_muons < 0) or np.any(d_neutrons < 0):
-        import warnings
-        warnings.warn(
-            f"Flight template '{name}': h_obs_km={h_obs_km} gives a LOWER "
-            f"secondary flux than the reference height ({reference_h_obs_km} km) "
-            "in some energy bins. FluxTemplate clips to >=1e-300 before "
-            "taking log10, so this negative excess will be silently "
-            "distorted rather than represented correctly. Inspect "
-            "d_muons/d_neutrons for this template before trusting it."
-        )
-
-    t_since_kyr = np.asarray(t_since_kyr, dtype=float)
-    edge_eps = max(1e-9, 1e-3 * duration_kyr)
-    grid = np.unique(np.concatenate([
-        t_since_kyr[t_since_kyr >= 0.0],
-        [0.0, duration_kyr, duration_kyr + edge_eps],
-    ]))
-    on = (grid < duration_kyr).astype(float)
-
-    species_grids = {
-        "mu+": np.outer(on, d_muons / 2.0),
-        "mu-": np.outer(on, d_muons / 2.0),
-        "neutron": np.outer(on, d_neutrons),
-        "primary": np.zeros((len(grid), len(e_grid))),
-    }
-
-    return FluxTemplate(name, e_grid, species_grids, t_since_kyr=grid)

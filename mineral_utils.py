@@ -29,6 +29,38 @@ TRACK_LENGTH_BINS_NM = np.logspace(LENGTH_MIN_LOG_NM, LENGTH_MAX_LOG_NM, LENGTH_
 
 TYPICAL_DEPTH_MM = 0.001
 
+_GEANT4_ENERGY_BINS_GEV_FULL = np.array([
+    0.001, 0.001177, 0.001385, 0.00163, 0.001918,
+    0.002257, 0.002656, 0.003126, 0.003678, 0.004329,
+    0.005094, 0.005995, 0.007055, 0.008302, 0.00977,
+    0.011498, 0.01353, 0.015923, 0.018738, 0.022051,
+    0.02595, 0.030539, 0.035938, 0.042292, 0.04977,
+    0.05857, 0.068926, 0.081113, 0.095455, 0.112332,
+    0.132194, 0.155568, 0.183074, 0.215443, 0.253536,
+    0.298365, 0.351119, 0.413201, 0.48626, 0.572237,
+    0.673415, 0.792483, 0.932603, 1.097499, 1.29155,
+    1.519911, 1.78865, 2.104904, 2.477076, 2.915053,
+    3.430469, 4.037017, 4.75081, 5.59081, 6.579332,
+    7.742637, 9.111628, 10.722672, 12.618569, 14.849683,
+    17.475284, 20.565123, 24.201283, 28.480359, 33.516027,
+    39.442061, 46.415888, 54.622772, 64.280731, 75.646333,
+    89.021509, 104.761575, 123.284674, 145.082878, 170.735265,
+    200.9233, 236.448941, 278.25594, 327.454916, 385.352859,
+    453.487851, 533.669923, 628.029144, 739.072203, 869.749003,
+    1023.531022, 1204.50354, 1417.474163, 1668.100537, 1963.04065,
+    2310.1297, 2718.588243, 3199.267138, 3764.935807, 4430.621458,
+    5214.008288, 6135.907273, 7220.809018, 8497.534359, 10000.0,
+    13000.0,
+])
+
+GEANT4_MAX_SIMULATED_ENERGY_GEV = 1963.04065
+
+DEFAULT_ENERGY_BINS_GEV = _GEANT4_ENERGY_BINS_GEV_FULL[
+    _GEANT4_ENERGY_BINS_GEV_FULL <= GEANT4_MAX_SIMULATED_ENERGY_GEV
+]
+
+DEFAULT_INTEGRATION_X_BINS_NM = np.linspace(0, 50000, 200)
+
 # --- Utility Functions ---
 def log_interp1d(xx, yy, kind='linear'):
     """
@@ -75,14 +107,14 @@ def calibrate_spectrum(x_bins, counts, x_scale_factor=1.0, y_scale_factor=1.0):
 
     return calibrated_y*y_scale_factor
 
-def slice_spectrum(x_bins, counts, angular_pdf=None, phi_cut_deg=0., pit_width=500., bulk_etching_depth=TYPICAL_DEPTH_MM*1.e6, f_phi= lambda phi: 1., correction=True):
+def slice_spectrum(counts_g, sample_mass_g=None, sample_area_cm2=None, sample_density_g_cm3=None, x_bins=DEFAULT_INTEGRATION_X_BINS_NM, angular_pdf=None, phi_cut_deg=0., pit_width=500., bulk_etching_depth=TYPICAL_DEPTH_MM*1.e6, f_phi= lambda phi: 1., correction=True):
     """
     Applies Monte Carlo simulation of track slicing, accounting for geometrical, angular, 
     and experimental filtering effects (min/max measurable length).
 
     Args:
         x_bins (np.ndarray): The bin edges for the true track length spectrum R [nm].
-        counts (np.ndarray): The array of true track counts N(R) in each bin.
+        counts_g (np.ndarray): The array of true track counts N(R) in each bin.
         angular_pdf (np.ndarray, optional): Normalized array P(phi) for the angle distribution 
                                             of tracks relative to the surface normal. Defaults to isotropic (sin(phi)).
         phi_cut_deg (float): Angular filter threshold (tracks with phi < phi_cut are rejected). 
@@ -98,17 +130,26 @@ def slice_spectrum(x_bins, counts, angular_pdf=None, phi_cut_deg=0., pit_width=5
                     the total input counts.
     """
 
+    if sample_mass_g is None:
+        if sample_area_cm2 is None:
+            raise ValueError("Either sample_mass_g or sample_area_cm2 must be provided.")
+        else:
+            if sample_density_g_cm3 is None:
+                raise ValueError("sample_density_g_cm3 must be provided when using sample_area_cm2.")
+            sample_mass_g = sample_area_cm2 * bulk_etching_depth * 1e-7 * sample_density_g_cm3
+
+    sample_counts = counts_g * sample_mass_g
+
     x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
     phi_cut_rad = np.deg2rad(phi_cut_deg)
 
     factor = int(x_bins[-1]/bulk_etching_depth)
 
-    stat_factor = np.sum(counts) * (factor + 1)
-
+    stat_factor = np.sum(sample_counts) * (factor + 1)
 
     n_samples = stat_factor * 10**np.rint(8 - np.log10(stat_factor))
 
-    samples = np.random.choice(x_mids, size=int(n_samples), p=counts/np.sum(counts))
+    samples = np.random.choice(x_mids, size=int(n_samples), p=sample_counts/np.sum(sample_counts))
 
     if angular_pdf:
         phi_grid = np.linspace(0, np.pi / 2, 1000)
@@ -567,9 +608,8 @@ class Paleodetector:
 
     def integrate_background_neutron_spectrum(
         self, 
-        x_bins, 
-        energy_bins_gev,  
-        sample_mass_kg,
+        x_bins=DEFAULT_INTEGRATION_X_BINS_NM, 
+        energy_bins_gev=DEFAULT_ENERGY_BINS_GEV,  
         background_types=['fission_n', 'alpha_n'],
         total_simulated_particles=1e4, 
         x_grid=TRACK_LENGTH_BINS_NM, 
@@ -581,7 +621,6 @@ class Paleodetector:
             x_bins (np.ndarray): The bin edges for the output track length spectrum [nm].
             energy_bins_gev (np.ndarray): The energy bin edges [GeV].
             total_exposure_kyr (float): The total exposure time [kyr].
-            sample_mass_kg (float): The mass of the mineral sample [kg].
             background_types (list, optional): List of background types to include. Defaults to ['fission', 'alpha_n'].
             total_simulated_particles (float, optional): Number of particles per Geant4 run. Defaults to 1e4.
             x_grid (np.ndarray, optional): The grid for track length spectrum calculation. Defaults to TRACK_LENGTH_BINS_NM.
@@ -598,13 +637,15 @@ class Paleodetector:
             total_simulated_particles, 
             )
 
-        sum_drdx *= self.total_age_kyr * 1e-3 * sample_mass_kg
+        sum_drdx *= self.total_age_kyr
 
         total_tracks_interp  = interp1d(x_mids_grid, np.array(sum_drdx),  bounds_error=False, fill_value='extrapolate')
 
-        total_tracks = np.array([quad(total_tracks_interp, x_bins[i], x_bins[i+1])[0] for i in range(len(x_mids))])
+        total_tracks_kg = np.array([quad(total_tracks_interp, x_bins[i], x_bins[i+1])[0] for i in range(len(x_mids))])
 
-        return total_tracks
+        total_tracks_g = total_tracks_kg * 1e-3
+
+        return x_bins, total_tracks_g
 
     def calculate_nu_spectrum(self, x_bins=TRACK_LENGTH_BINS_NM, flux_name='all'):
         """
@@ -647,18 +688,20 @@ class Paleodetector:
         
         return dRdx * 365 * 1e6
     
-    def integrate_nu_spectrum(self, x_bins, sample_mass, flux_name="all", x_grid=TRACK_LENGTH_BINS_NM):
+    def integrate_nu_spectrum(self, x_bins=DEFAULT_INTEGRATION_X_BINS_NM, flux_name="all", x_grid=TRACK_LENGTH_BINS_NM):
 
         x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
         x_mids_grid = x_grid[:-1] + np.diff(x_grid) / 2.0
 
-        drdx = self.calculate_nu_spectrum(x_grid, flux_name) * self.total_age_kyr * sample_mass * 1e-3
+        drdx = self.calculate_nu_spectrum(x_grid, flux_name) * self.total_age_kyr
 
         total_tracks_interp  = interp1d(x_mids_grid, np.array(drdx),  bounds_error=False, fill_value='extrapolate')
 
-        total_tracks = [quad(total_tracks_interp, x_bins[i], x_bins[i+1])[0] for i in range(len(x_mids))]
+        total_tracks_kg = [quad(total_tracks_interp, x_bins[i], x_bins[i+1])[0] for i in range(len(x_mids))]
 
-        return total_tracks
+        total_tracks_g = np.asarray(total_tracks_kg) * 1e-3
+
+        return x_bins, total_tracks_g
     
     def calculate_fission_spectrum(self, x_bins=TRACK_LENGTH_BINS_NM):
         """
@@ -717,18 +760,20 @@ class Paleodetector:
         
         return dRdx
     
-    def integrate_fission_spectrum(self, x_bins, sample_mass, x_grid=TRACK_LENGTH_BINS_NM):
+    def integrate_fission_spectrum(self, x_bins=DEFAULT_INTEGRATION_X_BINS_NM, x_grid=TRACK_LENGTH_BINS_NM):
 
         x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
         x_mids_grid = x_grid[:-1] + np.diff(x_grid) / 2.0
 
-        drdx = self.calculate_fission_spectrum(x_grid) * self.total_age_kyr * sample_mass * 1e-3
+        drdx = self.calculate_fission_spectrum(x_grid) * self.total_age_kyr
 
         total_tracks_interp  = interp1d(x_mids_grid, np.array(drdx),  bounds_error=False, fill_value='extrapolate')
 
-        total_tracks = np.asarray([quad(total_tracks_interp, x_bins[i], x_bins[i+1])[0] for i in range(len(x_mids))])
+        total_tracks_kg = np.asarray([quad(total_tracks_interp, x_bins[i], x_bins[i+1])[0] for i in range(len(x_mids))])
 
-        return total_tracks
+        total_tracks_g = total_tracks_kg * 1e-3
+
+        return x_bins, total_tracks_g
 
     def _load_depth_interpolators(self, species='mu-'):
         """
@@ -1114,11 +1159,7 @@ class Paleodetector:
         total_simulated_particles=1e4, target_thickness_mm=TYPICAL_DEPTH_MM,
         secondary_neutrons_species=('mu-', 'mu+', 'neutron'),
     ):
-        """
-        Vectorized replacement: processes secondary-neutron Geant4 data for an
-        ARRAY of times at once. See _get_local_neutron_flux_batch docstring for
-        how the time-dependent depth range (via overburden) is handled.
-        """
+
         if not self._depth_interpolators.get('neutron'):
             raise ValueError("Depth interpolators not initialized for neutrons.")
 
@@ -1246,11 +1287,7 @@ class Paleodetector:
 
 
     def _convert_recoil_to_track_spectrum(self, x_bins, recoil_data, energy_bins_gev, species='mu-'):
-        """
-        Same as before, but recoil_data[fragment] may now have shape (T, n_recoil_bins)
-        instead of (n_recoil_bins,). scipy's interp1d(..., axis=-1) interpolates each
-        time-row independently in one call.
-        """
+
         er_bins = recoil_data['Er_bins']
         er_mid_mev = er_bins[:-1] + np.diff(er_bins) / 2.0
 
@@ -1307,16 +1344,10 @@ class Paleodetector:
 
 
     def calculate_particle_signal_spectrum(
-        self, x_bins, t_kyr_array, energy_bins_gev,
-        total_simulated_particles=1e4, target_thickness_mm=TYPICAL_DEPTH_MM,
-        species='mu-', nucleus="total",
+        self,  t_kyr_array, x_bins=DEFAULT_INTEGRATION_X_BINS_NM,
+        energy_bins_gev=DEFAULT_ENERGY_BINS_GEV, total_simulated_particles=1e4, 
+        target_thickness_mm=TYPICAL_DEPTH_MM, species='mu-', nucleus="total",
     ):
-        """
-        Batch replacement for calculate_particle_signal_spectrum: takes the whole
-        t_kyr_array at once, returns dR/dx with shape (T, n_x_bins) [or dict of
-        those, per-nucleus].
-        """
-
         depth_mwe_array = self._overburden_interpolator(t_kyr_array)
 
         scenario_name = self.flux_history.baseline.name + "_" + "_".join(
@@ -1346,7 +1377,7 @@ class Paleodetector:
         dRdx_at_depth = self._convert_recoil_to_track_spectrum(x_bins, recoil_data, energy_bins_gev, species)
 
         if nucleus == "total":
-            return dRdx_at_depth["total"]          # (T, n_x_bins)
+            return dRdx_at_depth["total"]
         elif nucleus == "all":
             return dRdx_at_depth
         else:
@@ -1354,16 +1385,11 @@ class Paleodetector:
 
 
     def integrate_particle_signal_spectrum(
-        self, x_bins, energy_bins_gev, sample_mass_kg,
+        self, x_bins=DEFAULT_INTEGRATION_X_BINS_NM, energy_bins_gev=DEFAULT_ENERGY_BINS_GEV,
         exposure_window_kyr=None, flux_history=None, overburden_history=None,
         steps=None, total_simulated_particles=1e4, target_thickness_mm=TYPICAL_DEPTH_MM,
         x_grid=TRACK_LENGTH_BINS_NM, species='mu-',
     ):
-        """
-        Same public signature/behavior as before, but internally does ONE
-        vectorized batch call instead of a Pool over timesteps. Multiprocessing
-        now happens one level up, over species (see integrate_all_particles).
-        """
         if flux_history is not None:
             self.flux_history = flux_history
         elif self.flux_history is None:
@@ -1389,16 +1415,16 @@ class Paleodetector:
         t_kyr_array = np.linspace(exposure_window_kyr[0], exposure_window_kyr[1], steps)
 
         dRdx_array = self.calculate_particle_signal_spectrum(
-            x_grid, t_kyr_array, energy_bins_gev,
-            total_simulated_particles, target_thickness_mm, species,
+             t_kyr_array, x_bins=x_grid, energy_bins_gev=energy_bins_gev,
+            total_simulated_particles=total_simulated_particles, target_thickness_mm=target_thickness_mm, species=species,
         )
 
-        total_drdx = np.trapezoid(dRdx_array, t_kyr_array, axis=0)
+        total_drdx_kg = np.trapezoid(dRdx_array, t_kyr_array, axis=0)
 
-        spectrum_density = total_drdx * sample_mass_kg * 1e-3
+        total_drdx_g = total_drdx_kg * 1e-3
 
         internal_bin_widths = np.diff(x_grid)
-        cumulative_counts = np.concatenate(([0], np.cumsum(spectrum_density * internal_bin_widths)))
+        cumulative_counts = np.concatenate(([0], np.cumsum(total_drdx_g * internal_bin_widths)))
         cdf_interp = interp1d(x_grid, cumulative_counts, kind='linear', bounds_error=False,
                             fill_value=(0, cumulative_counts[-1]))
         total_tracks = cdf_interp(x_bins[1:]) - cdf_interp(x_bins[:-1])
@@ -1407,19 +1433,14 @@ class Paleodetector:
 
 
     def integrate_all_particles(
-        self, x_bins, energy_bins_gev, sample_mass_kg,
+        self,  x_bins=DEFAULT_INTEGRATION_X_BINS_NM, energy_bins_gev=DEFAULT_ENERGY_BINS_GEV,
         exposure_window_kyr=None, flux_history=None, overburden_history=None,
         steps=None, total_simulated_particles=1e4, target_thickness_mm=TYPICAL_DEPTH_MM,
         species_list=('mu-', 'mu+', 'neutron', 'secondary_neutron'),
     ):
-        """
-        Same public behavior, but the multiprocessing.Pool now parallelizes
-        across species (each worker does one fully-vectorized-over-time run)
-        instead of across timesteps.
-        """
 
         shared_kwargs = dict(
-            x_bins=x_bins, energy_bins_gev=energy_bins_gev, sample_mass_kg=sample_mass_kg,
+            x_bins=x_bins, energy_bins_gev=energy_bins_gev, 
             exposure_window_kyr=exposure_window_kyr, flux_history=flux_history,
             overburden_history=overburden_history, steps=steps,
             total_simulated_particles=total_simulated_particles,
@@ -1434,7 +1455,7 @@ class Paleodetector:
         total_tracks_by_species = dict(results)
         total_tracks_by_species['total'] = sum(total_tracks_by_species.values())
 
-        return total_tracks_by_species
+        return x_bins, total_tracks_by_species
 
 
 def _species_worker(self_and_args):
