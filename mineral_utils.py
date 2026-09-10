@@ -1412,6 +1412,8 @@ class Paleodetector:
                 (exposure_window_kyr[1] - exposure_window_kyr[0])
             )
 
+        steps = max(steps, 4)
+
         t_kyr_array = np.linspace(exposure_window_kyr[0], exposure_window_kyr[1], steps)
 
         dRdx_array = self.calculate_particle_signal_spectrum(

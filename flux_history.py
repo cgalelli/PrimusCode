@@ -175,7 +175,7 @@ class FluxTemplate:
 
         tcut = params.get("tcut", 500.e3)
 
-        nbins = max(250, int(tcut / 2.e2))
+        nbins = min(250, int(tcut / 2.e2))
 
         t_since_kyr = np.linspace(1., tcut, nbins)
 
