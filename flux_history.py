@@ -487,6 +487,9 @@ def _build_template(name=None, model=None, params=None, t_since_kyr=None, intera
 
     import crflux.models as pm
     from MCEq.core import MCEqRun
+    import MCEq
+
+    MCEq.config.debug_level = 0
 
     if model is None:
         model = pm.HillasGaisser2012
@@ -514,6 +517,7 @@ def _build_template(name=None, model=None, params=None, t_since_kyr=None, intera
     if t_since_kyr is None:
 
         model_instance = model(params, geomagnetic_cutoff=geomagnetic_cutoff)
+
         mceq_run.set_primary_model(model_instance)
 
         _set_h_obs(mceq_run, reference_h_obs_cm)

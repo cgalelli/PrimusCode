@@ -1127,25 +1127,6 @@ class Paleodetector:
                     where=norm_factor[None, :] != 0,
                 )
 
-        scenario_name = self.flux_history.baseline.name + "_" + "_".join(
-            event["template"].name + "_" + str(-event["start_time_kyr"]) + "kyr"
-            for event in self.flux_history.events
-        )
-
-        output_dir = os.path.join(self.data_path, "processed_recoils", self.name, species)
-        os.makedirs(output_dir, exist_ok=True)
-        output_filepath = os.path.join(output_dir, f"{scenario_name}_depth{depth_mwe_array[0]:.1f}_{depth_mwe_array[-1]:.1f}mwe.npz")
-
-        np.savez(
-            output_filepath,
-            t_kyr=t_kyr_array,
-            depth_mwe=depth_mwe_array,
-            Er_bins=RECOIL_ENERGY_BINS_MEV,
-            **normalized_spectra,
-        )
-        if self.verbose > 1:
-            print(f"    - Saved batched processed data ({n_t} timesteps) to {output_filepath}")
-
         return {
             't_kyr': t_kyr_array,
             'depth_mwe': depth_mwe_array,
@@ -1260,24 +1241,6 @@ class Paleodetector:
                     where=norm_factor[None, :] != 0,
                 )
 
-        scenario_name = self.flux_history.baseline.name + "_" + "_".join(
-            event["template"].name + "_" + str(-event["start_time_kyr"]) + "kyr"
-            for event in self.flux_history.events
-        )
-        output_dir = os.path.join(self.data_path, "processed_recoils", self.name, 'secondary_neutron')
-        os.makedirs(output_dir, exist_ok=True)
-        output_filepath = os.path.join(output_dir, f"{scenario_name}_depth{depth_mwe_array[0]:.1f}_{depth_mwe_array[-1]:.1f}mwe.npz")
-
-        np.savez(
-            output_filepath,
-            t_kyr=t_kyr_array,
-            depth_mwe=depth_mwe_array,
-            Er_bins=RECOIL_ENERGY_BINS_MEV,
-            **normalized_spectra,
-        )
-        if self.verbose > 1:
-            print(f"    - Saved batched secondary-neutron data ({n_t} timesteps) to {output_filepath}")
-
         return {
             't_kyr': t_kyr_array,
             'depth_mwe': depth_mwe_array,
@@ -1348,31 +1311,15 @@ class Paleodetector:
         energy_bins_gev=DEFAULT_ENERGY_BINS_GEV, total_simulated_particles=1e4, 
         target_thickness_mm=TYPICAL_DEPTH_MM, species='mu-', nucleus="total",
     ):
-        depth_mwe_array = self._overburden_interpolator(t_kyr_array)
-
-        scenario_name = self.flux_history.baseline.name + "_" + "_".join(
-            event["template"].name + "_" + str(-event["start_time_kyr"]) + "kyr"
-            for event in self.flux_history.events
-        )
-        filepath = os.path.join(
-            self.data_path, "processed_recoils", self.name, species, f"{scenario_name}_depth{depth_mwe_array[0]:.1f}_{depth_mwe_array[-1]:.1f}mwe.npz"
-        )
-
-        recoil_data = None
-        if os.path.exists(filepath):
-            cached = np.load(filepath)
-            if cached['t_kyr'].shape == t_kyr_array.shape and np.allclose(cached['t_kyr'], t_kyr_array):
-                recoil_data = cached
-
-        if recoil_data is None:
-            if species == 'secondary_neutron':
-                recoil_data = self._process_secondary_geant4_data(
-                    t_kyr_array, energy_bins_gev, total_simulated_particles, target_thickness_mm,
-                )
-            else:
-                recoil_data = self._process_geant4_data(
-                    t_kyr_array, energy_bins_gev, total_simulated_particles, target_thickness_mm, species,
-                )
+        
+        if species == 'secondary_neutron':
+            recoil_data = self._process_secondary_geant4_data(
+                t_kyr_array, energy_bins_gev, total_simulated_particles, target_thickness_mm,
+            )
+        else:
+            recoil_data = self._process_geant4_data(
+                t_kyr_array, energy_bins_gev, total_simulated_particles, target_thickness_mm, species,
+            )
 
         dRdx_at_depth = self._convert_recoil_to_track_spectrum(x_bins, recoil_data, energy_bins_gev, species)
 
