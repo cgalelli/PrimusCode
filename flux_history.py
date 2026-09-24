@@ -77,7 +77,7 @@ class FluxTemplate:
             )
         return RegularGridInterpolator(
             (self.t_since_kyr, log_e), log_flux,
-            method='linear', bounds_error=False, fill_value=0.0,
+            method='linear', bounds_error=False, fill_value=None,
         )
 
     @property
@@ -107,8 +107,7 @@ class FluxTemplate:
 
         t = np.asarray(t_since_kyr, dtype=float)
 
-        t_clipped = np.clip(t, self.t_since_kyr[0], self.t_since_kyr[-1])
-        t_b, e_b = np.broadcast_arrays(t_clipped, log_e)
+        t_b, e_b = np.broadcast_arrays(t, log_e)
         pts = np.stack([t_b.ravel(), e_b.ravel()], axis=-1)
 
         out = np.power(10.0, self._interp[species](pts)).reshape(t_b.shape)
@@ -163,6 +162,15 @@ class FluxTemplate:
         h_obs_km = params.pop("h_obs_km", None)
         interaction_model = params.pop("interaction_model", DEFAULT_INTERACTION_MODEL)
 
+        param_name = "_".join(str(val) for val in params.values())
+        name = kind + "_" + param_name + str(geomagnetic_cutoff) + "GV"
+        if h_obs_km: 
+            name = name + "_" + str(h_obs_km) + "km"
+
+        path = os.path.join(template_dir, name + ".npz")
+        if os.path.exists(path) and not force_rebuild:
+            return cls.load(path)
+
         params_tuple = tuple(params.values())
         if kind == "Baseline":
             model = None
@@ -192,7 +200,7 @@ class FluxHistory:
     Timeline: see module docstring -- 0 = present, negative = past.
     """
 
-    def __init__(self, baseline={"kind": "Baseline"}, events=None, template_dir="Data/flux_data"):
+    def __init__(self, baseline={"kind": "Baseline"}, events=None, excursions=None, template_dir="Data/flux_data"):
         """
         Args:
             baseline: a FluxTemplate, a cached template name (str), or a
@@ -200,16 +208,27 @@ class FluxHistory:
             events: list of dicts, each with 'start_time_kyr' (or
                 'time_kyr') and 'template' (FluxTemplate / name / params
                 dict), and optionally 'weight' / 'label'.
+            excursions: list of dicts, each with 'start_time_kyr',
+                'end_time_kyr', 'geomagnetic_cutoff', and optionally
+                'label' -- see `add_excursion`.
             template_dir: directory used to load/save templates.
             name: optional human label; if omitted, `.signature` derives
                 one from the actual content.
         """
         self.template_dir = template_dir
+        self._baseline_spec = baseline
+        self._baseline_cutoff_variants = {}
         self.baseline = self._resolve(baseline)
         self.events = []
         for event in (events or []):
             start_time = event.get("start_time_kyr")
             self.add_event(start_time, event["template"], weight=event.get("weight", 1.0), label=event.get("label"))
+        self.excursions = []
+        for excursion in (excursions or []):
+            self.add_excursion(
+                excursion["start_time_kyr"], excursion["end_time_kyr"],
+                excursion["geomagnetic_cutoff"], label=excursion.get("label"),
+            )
 
     def _resolve(self, template):
         if isinstance(template, FluxTemplate):
@@ -239,25 +258,131 @@ class FluxHistory:
         """
         resolved = self._resolve(template)
         self.events.append({
-            "template": resolved, "start_time_kyr": float(start_time_kyr),
-            "weight": weight, "label": label,
+            "template": resolved, "spec": template, "start_time_kyr": float(start_time_kyr),
+            "weight": weight, "label": label, "_cutoff_variants": {},
         })
-        self._name = None  # a hand-set name can no longer describe the new content
+        self._name = None 
         return resolved
+
+    def add_excursion(self, start_time_kyr, end_time_kyr, geomagnetic_cutoff, label=None):
+        """
+        Register a geomagnetic excursion: a transient rigidity-cutoff
+        change, not a new physical flux source. Over the absolute-time
+        window [start_time_kyr, end_time_kyr) (same convention as
+        everywhere else: 0 = present, negative = past), every live
+        baseline/event's rigidity cutoff is swapped from whatever it was
+        built with to `geomagnetic_cutoff` (GV); outside the window it
+        reverts to normal. This modulates the *existing* flux history
+        (baseline + whichever events are active at that time) rather
+        than adding a signal of its own.
+
+        Implementation: MCEq has no notion of a time-dependent cutoff
+        within a single run, so rather than varying geomagnetic_cutoff
+        continuously, each affected baseline/event grows a second, fully
+        independent template built at `geomagnetic_cutoff` -- cached
+        under its own name by `FluxTemplate.get_or_build` (which already
+        keys its cache filename off `geomagnetic_cutoff`, so this needs
+        no new caching logic). `flux()` then simply picks, per time
+        sample, whether to read from the normal-cutoff stack or the
+        excursion-cutoff stack.
+
+        Only a baseline/event added as a params dict (i.e. it still has
+        a 'kind' to rebuild from) can grow one of these variants; one
+        added as an already-built FluxTemplate or a bare cached name has
+        no recoverable geomagnetic_cutoff to vary, and only raises when
+        a query actually lands inside this excursion's window (not now).
+
+        Multiple excursions may be registered; where two overlap in
+        time, the one added *later* wins for the overlapping samples.
+        """
+        if end_time_kyr <= start_time_kyr:
+            raise ValueError(
+                f"Excursion end_time_kyr ({end_time_kyr}) must be after "
+                f"start_time_kyr ({start_time_kyr})."
+            )
+        excursion = {
+            "start_time_kyr": float(start_time_kyr),
+            "end_time_kyr": float(end_time_kyr),
+            "geomagnetic_cutoff": float(geomagnetic_cutoff),
+            "label": label,
+        }
+        self.excursions.append(excursion)
+        return excursion
+
+    def _cutoff_variant(self, spec, cache, geomagnetic_cutoff):
+        """
+        Look up (building/loading via MCEq if needed) the version of a
+        baseline/event's template at a different `geomagnetic_cutoff`,
+        with the rest of its physical params (kind, distance, etc.)
+        unchanged. `cache` is the per-baseline/event dict that memoizes
+        this so repeated queries at the same excursion cutoff don't
+        touch disk twice.
+        """
+        if geomagnetic_cutoff in cache:
+            return cache[geomagnetic_cutoff]
+        if not isinstance(spec, dict):
+            raise TypeError(
+                "A geomagnetic excursion needs a params dict to rebuild "
+                f"this baseline/event at a different cutoff, but it was "
+                f"added as a {type(spec).__name__}. Add it as e.g. "
+                "{'kind': 'Baseline'} instead of a pre-built FluxTemplate "
+                "or a bare cached name if it should respond to excursions."
+            )
+        variant_spec = dict(spec)
+        variant_spec["geomagnetic_cutoff"] = geomagnetic_cutoff
+        variant = FluxTemplate.get_or_build(variant_spec, self.template_dir)
+        cache[geomagnetic_cutoff] = variant
+        return variant
+
+    def _flux_stack(self, species, energy_gev, t_kyr, geomagnetic_cutoff=None):
+        """
+        Baseline + all events summed, at absolute time(s) `t_kyr`, using
+        either the normal (`geomagnetic_cutoff=None`) or an
+        excursion-swapped template for each.
+        """
+        if geomagnetic_cutoff is None:
+            baseline = self.baseline
+        else:
+            baseline = self._cutoff_variant(self._baseline_spec, self._baseline_cutoff_variants, geomagnetic_cutoff)
+
+        total = baseline.flux(species, energy_gev)
+        total = np.broadcast_to(total, np.broadcast_shapes(np.shape(t_kyr), np.shape(energy_gev))).copy()
+        for event in self.events:
+            if geomagnetic_cutoff is None:
+                template = event["template"]
+            else:
+                template = self._cutoff_variant(event["spec"], event["_cutoff_variants"], geomagnetic_cutoff)
+            t_since = np.asarray(t_kyr, dtype=float) - event["start_time_kyr"]
+            t_since *= 1.e3
+            total = total + event["weight"] * template.flux(species, energy_gev, t_since_kyr=t_since)
+        return total
 
     def flux(self, species, energy_gev, t_kyr):
         """
         Total flux (baseline + all active events) for one species, at
         absolute time(s) `t_kyr` (0 = present, negative = past -- see
-        module docstring).
+        module docstring), with any registered geomagnetic excursions
+        (see `add_excursion`) swapped in over their windows.
         """
+        total = self._flux_stack(species, energy_gev, t_kyr)
 
-        total = self.baseline.flux(species, energy_gev, t_kyr)
-        total = np.broadcast_to(total, np.broadcast_shapes(np.shape(t_kyr), np.shape(energy_gev))).copy()
-        for event in self.events:
-            t_since = np.asarray(t_kyr, dtype=float) - event["start_time_kyr"]
-            t_since *= 1.e3
-            total = total + event["weight"] * event["template"].flux(species, energy_gev, t_since_kyr=t_since)
+        if not self.excursions:
+            return total
+
+        t_arr = np.asarray(t_kyr, dtype=float)
+        shape = np.broadcast_shapes(t_arr.shape, np.shape(energy_gev))
+        total = np.broadcast_to(total, shape).copy()
+        t_b = np.broadcast_to(t_arr, shape)
+
+        for excursion in self.excursions:
+            mask = (t_b >= excursion["start_time_kyr"]) & (t_b < excursion["end_time_kyr"])
+            if not np.any(mask):
+                continue
+            excursion_total = self._flux_stack(
+                species, energy_gev, t_kyr, geomagnetic_cutoff=excursion["geomagnetic_cutoff"]
+            )
+            excursion_total = np.broadcast_to(excursion_total, shape)
+            total = np.where(mask, excursion_total, total)
         return total
 
     def get_map(self, species, t_grid_kyr, e_grid_gev=None):
@@ -442,8 +567,6 @@ def _corrected_secondaries(mceq_run, angles=DEFAULT_ANGLES_DEG, weights=DEFAULT_
     """
     e_grid = mceq_run.e_grid
     muons, neutrons = _zenith_averaged_secondaries(mceq_run, angles, weights)
-    muons = muons * 1e4
-    neutrons = neutrons * 1e4
 
     E0 = e_grid[32]
     g_pre = 2.6
@@ -512,7 +635,7 @@ def _build_template(name=None, model=None, params=None, t_since_kyr=None, intera
     if params is None:
         params = ()
 
-    reference_h_obs_cm = (h_obs_km if h_obs_km is not None else 0.5) * 1.0e5
+    reference_h_obs_cm = (h_obs_km if h_obs_km is not None else 0.) * 1.0e5
 
     if t_since_kyr is None:
 
@@ -550,14 +673,14 @@ def _build_template(name=None, model=None, params=None, t_since_kyr=None, intera
             np.clip(neutrons_t, 1e-44, None, out=neutrons_t)
             np.clip(muons_t, 1e-44, None, out=muons_t)
 
-            neutrons.append(neutrons_t * 1e4)
-            muons.append(muons_t * 1e4)
+            neutrons.append(neutrons_t)
+            muons.append(muons_t)
             primary.append(primary_t)
 
     return FluxTemplate(
         name, e_grid,
         {
-            "primary": np.array(primary),
+            "primary": np.array(primary) * 1e-4,
             "mu+": np.array(muons) / 2.0,
             "mu-": np.array(muons) / 2.0,
             "neutron": np.array(neutrons),
