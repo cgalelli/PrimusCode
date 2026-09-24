@@ -90,6 +90,10 @@ void DetectorConstruction::DefineMaterials()
   Quartz->AddElement(Si, 33.*perCent);
 
 
+  G4Material* Diamond = new G4Material("Diamond",3.5*CLHEP::g/CLHEP::cm3,1, kStateSolid );
+  Diamond->AddElement(C,  1);
+
+
   // --- Standard Materials (Optional) ---
   nist->FindOrBuildMaterial("G4_SiO2");
   nist->FindOrBuildMaterial("G4_AIR");
