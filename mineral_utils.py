@@ -13,13 +13,15 @@ from flux_history import FluxHistory
 # --- Physical Constants ---
 PROTON_MASS_MEV = 938.3
 NEUTRON_MASS_MEV = 939.6
-AVOGADRO_NUMBER = 6.022e23
+B0_U238 = 7.570126
+FISSIONS_U238_G_KYR = 2.14e8
+U238_ABUNDANCE = 0.9927
 KYR_PER_SECOND = 1/ (60 * 60 * 24 * 365 * 1e3)
 
 # --- Binning setup ---
-RECOIL_N_BINS= 201
-RECOIL_ER_MIN_LOG_MEV= -2 
-RECOIL_ER_MAX_LOG_MEV= 6
+RECOIL_N_BINS= 301
+RECOIL_ER_MIN_LOG_MEV= -3 
+RECOIL_ER_MAX_LOG_MEV= 4
 RECOIL_ENERGY_BINS_MEV = np.logspace(RECOIL_ER_MIN_LOG_MEV, RECOIL_ER_MAX_LOG_MEV, RECOIL_N_BINS)
 
 LENGTH_N_BINS = 1000
@@ -27,33 +29,38 @@ LENGTH_MIN_LOG_NM = 1.5
 LENGTH_MAX_LOG_NM = 5.5
 TRACK_LENGTH_BINS_NM = np.logspace(LENGTH_MIN_LOG_NM, LENGTH_MAX_LOG_NM, LENGTH_N_BINS)
 
-TYPICAL_DEPTH_CM = 0.0001
+_GEANT4_ENERGY_BINS_GEV_FULL = np.array([1.00000000e-03, 1.14504757e-03, 1.31113394e-03, 1.50131073e-03,
+       1.71907220e-03, 1.96841945e-03, 2.25393390e-03, 2.58086154e-03,
+       2.95520924e-03, 3.38385515e-03, 3.87467512e-03, 4.43668733e-03,
+       5.08021805e-03, 5.81709133e-03, 6.66084629e-03, 7.62698586e-03,
+       8.73326162e-03, 1.00000000e-02, 1.14504757e-02, 1.31113394e-02,
+       1.50131073e-02, 1.71907220e-02, 1.96841945e-02, 2.25393390e-02,
+       2.58086154e-02, 2.95520924e-02, 3.38385515e-02, 3.87467512e-02,
+       4.43668733e-02, 5.08021805e-02, 5.81709133e-02, 6.66084629e-02,
+       7.62698586e-02, 8.73326162e-02, 1.00000000e-01, 1.14504757e-01,
+       1.31113394e-01, 1.50131073e-01, 1.71907220e-01, 1.96841945e-01,
+       2.25393390e-01, 2.58086154e-01, 2.95520924e-01, 3.38385515e-01,
+       3.87467512e-01, 4.43668733e-01, 5.08021805e-01, 5.81709133e-01,
+       6.66084629e-01, 7.62698586e-01, 8.73326162e-01, 1.00000000e+00,
+       1.14504757e+00, 1.31113394e+00, 1.50131073e+00, 1.71907220e+00,
+       1.96841945e+00, 2.25393390e+00, 2.58086154e+00, 2.95520924e+00,
+       3.38385515e+00, 3.87467512e+00, 4.43668733e+00, 5.08021805e+00,
+       5.81709133e+00, 6.66084629e+00, 7.62698586e+00, 8.73326162e+00,
+       1.00000000e+01, 1.14504757e+01, 1.31113394e+01, 1.50131073e+01,
+       1.71907220e+01, 1.96841945e+01, 2.25393390e+01, 2.58086154e+01,
+       2.95520924e+01, 3.38385515e+01, 3.87467512e+01, 4.43668733e+01,
+       5.08021805e+01, 5.81709133e+01, 6.66084629e+01, 7.62698586e+01,
+       8.73326162e+01, 1.00000000e+02, 1.14504757e+02, 1.31113394e+02,
+       1.50131073e+02, 1.71907220e+02, 1.96841945e+02, 2.25393390e+02,
+       2.58086154e+02, 2.95520924e+02, 3.38385515e+02, 3.87467512e+02,
+       4.43668733e+02, 5.08021805e+02, 5.81709133e+02, 6.66084629e+02,
+       7.62698586e+02, 8.73326162e+02, 1.00000000e+03, 1.14504757e+03,
+       1.31113394e+03, 1.50131073e+03, 1.71907220e+03, 1.96841945e+03,
+       2.25393390e+03, 2.58086154e+03, 2.95520924e+03, 3.38385515e+03,
+       3.87467512e+03, 4.43668733e+03, 5.08021805e+03, 5.81709133e+03,
+       6.66084629e+03, 7.62698586e+03, 8.73326162e+03, 1.00000000e+04])
 
-_GEANT4_ENERGY_BINS_GEV_FULL = np.array([
-    0.001, 0.001177, 0.001385, 0.00163, 0.001918,
-    0.002257, 0.002656, 0.003126, 0.003678, 0.004329,
-    0.005094, 0.005995, 0.007055, 0.008302, 0.00977,
-    0.011498, 0.01353, 0.015923, 0.018738, 0.022051,
-    0.02595, 0.030539, 0.035938, 0.042292, 0.04977,
-    0.05857, 0.068926, 0.081113, 0.095455, 0.112332,
-    0.132194, 0.155568, 0.183074, 0.215443, 0.253536,
-    0.298365, 0.351119, 0.413201, 0.48626, 0.572237,
-    0.673415, 0.792483, 0.932603, 1.097499, 1.29155,
-    1.519911, 1.78865, 2.104904, 2.477076, 2.915053,
-    3.430469, 4.037017, 4.75081, 5.59081, 6.579332,
-    7.742637, 9.111628, 10.722672, 12.618569, 14.849683,
-    17.475284, 20.565123, 24.201283, 28.480359, 33.516027,
-    39.442061, 46.415888, 54.622772, 64.280731, 75.646333,
-    89.021509, 104.761575, 123.284674, 145.082878, 170.735265,
-    200.9233, 236.448941, 278.25594, 327.454916, 385.352859,
-    453.487851, 533.669923, 628.029144, 739.072203, 869.749003,
-    1023.531022, 1204.50354, 1417.474163, 1668.100537, 1963.04065,
-    2310.1297, 2718.588243, 3199.267138, 3764.935807, 4430.621458,
-    5214.008288, 6135.907273, 7220.809018, 8497.534359, 10000.0,
-    13000.0,
-])
-
-GEANT4_MAX_SIMULATED_ENERGY_GEV = 1963.04065
+GEANT4_MAX_SIMULATED_ENERGY_GEV = 1968.4194472866113
 
 DEFAULT_ENERGY_BINS_GEV = _GEANT4_ENERGY_BINS_GEV_FULL[
     _GEANT4_ENERGY_BINS_GEV_FULL <= GEANT4_MAX_SIMULATED_ENERGY_GEV
@@ -61,7 +68,31 @@ DEFAULT_ENERGY_BINS_GEV = _GEANT4_ENERGY_BINS_GEV_FULL[
 
 DEFAULT_INTEGRATION_X_BINS_NM = np.linspace(0, 50000, 200)
 
-# --- Utility Functions ---
+
+def set_integration_x_bins_nm(integration_x_bins_nm):
+    global DEFAULT_INTEGRATION_X_BINS_NM 
+    
+    DEFAULT_INTEGRATION_X_BINS_NM = integration_x_bins_nm
+    return
+
+
+def set_default_energy_bins_gev(geant4_energy_bins_gev_full=None, geant4_max_simulated_energy_gev=None):
+    global _GEANT4_ENERGY_BINS_GEV_FULL
+    global GEANT4_MAX_SIMULATED_ENERGY_GEV
+    global DEFAULT_ENERGY_BINS_GEV
+
+    if geant4_energy_bins_gev_full is not None:
+        _GEANT4_ENERGY_BINS_GEV_FULL = geant4_energy_bins_gev_full
+    if geant4_max_simulated_energy_gev is not None:
+        GEANT4_MAX_SIMULATED_ENERGY_GEV = geant4_max_simulated_energy_gev
+
+    DEFAULT_ENERGY_BINS_GEV = _GEANT4_ENERGY_BINS_GEV_FULL[
+        _GEANT4_ENERGY_BINS_GEV_FULL <= GEANT4_MAX_SIMULATED_ENERGY_GEV
+    ]
+
+    return
+
+
 def log_interp1d(xx, yy, kind='linear'):
     """
     Performs an interpolation in log-log space for better accuracy with wide-ranging data.
@@ -79,6 +110,7 @@ def log_interp1d(xx, yy, kind='linear'):
     lin_interp = interp1d(logx, logy, kind=kind, fill_value='extrapolate')
     log_interp = lambda zz: np.power(10.0, lin_interp(np.log10(zz)))
     return log_interp
+
 
 def _asymmetric_gaussian_kernel(size, sigma_left, sigma_right=None):
     """
@@ -111,6 +143,7 @@ def _asymmetric_gaussian_kernel(size, sigma_left, sigma_right=None):
 
     return kernel / np.sum(kernel)
 
+
 def smear_spectrum(counts, size, sigma_left, sigma_right=None):
     """
     Applies asymmetric gaussian smearing to the track length distribution.
@@ -128,7 +161,8 @@ def smear_spectrum(counts, size, sigma_left, sigma_right=None):
 
     return smeared_counts
 
-def slice_spectrum(counts_mg, sample_mass_mg=None, sample_area_cm2=None, sample_density_g_cm3=None, x_bins=DEFAULT_INTEGRATION_X_BINS_NM, angular_pdf=None, phi_cut_deg=0., pit_width=500., bulk_etching_depth=TYPICAL_DEPTH_CM*1.e7, f_phi= lambda phi: 1., correction=True):
+
+def slice_spectrum(counts_mg, sample_area_cm2=None, sample_density_g_cm3=None, x_bins=DEFAULT_INTEGRATION_X_BINS_NM, angular_pdf=None, phi_cut_deg=0., pit_width=500., bulk_etching_depth=100., f_phi= lambda phi: 1., correction=True):
     """
     Applies Monte Carlo simulation of track slicing, accounting for geometrical, angular, 
     and experimental filtering effects (min/max measurable length).
@@ -150,27 +184,18 @@ def slice_spectrum(counts_mg, sample_mass_mg=None, sample_area_cm2=None, sample_
         np.ndarray: The resulting measured track count histogram N(L_meas), normalized to 
                     the total input counts.
     """
+    cube_size = 1.e-3/sample_density_g_cm3
 
-    if sample_mass_mg is None:
-        if sample_area_cm2 is None:
-            raise ValueError("Either sample_mass_g or sample_area_cm2 must be provided.")
-        else:
-            if sample_density_g_cm3 is None:
-                raise ValueError("sample_density_g_cm3 must be provided when using sample_area_cm2.")
-            sample_mass_mg = sample_area_cm2 * bulk_etching_depth * 1e-7 * sample_density_g_cm3 * 1e3
+    cube_side = np.power(cube_size, 1/3)
 
-    sample_counts = counts_mg * sample_mass_mg
+    factor = sample_area_cm2/(cube_side**2)
 
     x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
     phi_cut_rad = np.deg2rad(phi_cut_deg)
 
-    factor = int(x_bins[-1]/bulk_etching_depth)
+    n_samples = factor*np.sum(counts_mg)
 
-    stat_factor = np.sum(sample_counts) * (factor + 1)
-
-    n_samples = stat_factor * 10**np.rint(8 - np.log10(stat_factor))
-
-    samples = np.random.choice(x_mids, size=int(n_samples), p=sample_counts/np.sum(sample_counts))
+    samples = np.random.choice(x_mids, size=int(n_samples), p=counts_mg/np.sum(counts_mg))
 
     if angular_pdf:
         phi_grid = np.linspace(0, np.pi / 2, 1000)
@@ -183,7 +208,7 @@ def slice_spectrum(counts_mg, sample_mass_mg=None, sample_area_cm2=None, sample_
     samples_retained = samples[is_retained]
     phi_retained = sampled_angles[is_retained]
 
-    sim_start_point = np.random.uniform(low = -factor*bulk_etching_depth, high = bulk_etching_depth, size=len(samples_retained))
+    sim_start_point = np.random.uniform(low = -cube_side/2., high = cube_side/2., size=len(samples_retained))
 
     sim_end_point = sim_start_point + (samples_retained * np.sin(phi_retained))
 
@@ -201,11 +226,10 @@ def slice_spectrum(counts_mg, sample_mass_mg=None, sample_area_cm2=None, sample_
     else:
         corrected_measurable_samples = measured_samples
 
-    hist_measured, _ = np.histogram(corrected_measurable_samples, bins=x_bins, density=False)
+    hist_measurable, _ = np.histogram(corrected_measurable_samples, bins=x_bins, density=False)
 
-    hist_norm = hist_measured / 10**np.rint(8 - np.log10(stat_factor))
+    return hist_measurable
 
-    return hist_norm
 
 def detection_model_efficiency(x_bins, counts, precision, recall, model_mean, sigma_left, sigma_right=None, meas_error=1000.):
     """
@@ -242,6 +266,7 @@ def detection_model_efficiency(x_bins, counts, precision, recall, model_mean, si
     counts_with_measure = smear_spectrum(counts_with_efficiency, len(x_bins)//2*2-1, meas_error/np.diff(x_bins)[0], meas_error/np.diff(x_bins)[0])
 
     return counts_with_measure
+
 
 # --- Main Paleodetector Class ---
 class Paleodetector:
@@ -304,8 +329,10 @@ class Paleodetector:
         if self.verbose>0:
             print(f"Initialized Paleodetector: {self.name}")
 
+
     def set_flux_history(self, FluxHistory):
         self.flux_history = FluxHistory
+
 
     def _interpolate_overburden_history(self, overburden_history=None):
         """
@@ -354,6 +381,7 @@ class Paleodetector:
 
         return interp1d(times, overburdens, bounds_error=True)
 
+
     def _load_nuclear_data(self, filename):
         """
         Loads and caches nuclear data files (e.g., U238.dat, BindingEne.txt).
@@ -380,104 +408,8 @@ class Paleodetector:
             
         self._nuclear_data_cache[filename] = np.loadtxt(filepath, usecols=cols_to_use, unpack=True)
         return self._nuclear_data_cache[filename]
-    
-    def _load_srim_data(self, ion_z):
-        """
-        Loads and caches processed SRIM data for a given ion, creating an energy-to-range function.
-        It checks for a pre-processed file; if not found, it processes the raw SRIM data.
 
-        Args:
-            ion_z (int): The atomic number (Z) of the ion.
-
-        Returns:
-            tuple: A tuple containing (e_to_x_func, e, dee_dx, den_dx, x) where:
-                   e_to_x_func (function): Interpolation function from Energy [keV] to Track Length [µm].
-                   e (np.ndarray): Energy array [keV].
-                   dee_dx (np.ndarray): Electronic stopping power [keV/µm].
-                   den_dx (np.ndarray): Nuclear stopping power [keV/µm].
-                   x (np.ndarray): Track length array [µm].
-        """
-        if ion_z in self._srim_cache:
-            return self._srim_cache[ion_z]
-
-        ion_symbol = element(ion_z).symbol
-        raw_srim_filename = f"{element(ion_z).name} in {self.composition}.txt"
-        raw_srim_filepath = os.path.join(self.data_path, "SRIM_data", self.name, raw_srim_filename)    
-        processed_srim_dir = os.path.join(self.data_path, "SRIM_data", self.name)
-        processed_srim_filepath = os.path.join(processed_srim_dir, f"{ion_symbol}-{self.shortname}.txt")
-
-        e_kev, dee_dx, den_dx, length_um = (None, None, None, None)
-
-        if os.path.exists(processed_srim_filepath):
-            e_kev, dee_dx, den_dx, length_um = np.loadtxt(processed_srim_filepath, skiprows=1, unpack=True)
-        else:
-            if self.verbose>0:
-                print(f"Pre-processed SRIM data for {ion_symbol} (Z={ion_z}) not found.")
-
-            e_kev, dee_dx, den_dx, length_um = self._process_raw_srim_data(raw_srim_filepath)
-            if e_kev is not None and length_um is not None:
-                np.savetxt(processed_srim_filepath, np.column_stack((e_kev, dee_dx, den_dx, length_um)), header="Energy(keV)    dEe/dx(keV/micro_m)  dEn/dx(keV/micro_m)  x(micro_m)", fmt="%.6e")
-
-        if e_kev is None or length_um is None:
-            print(f"Warning: Could not load or process SRIM data for Z={ion_z}. Skipping.")
-            return None, None, None, None, None
- 
-        unique_length, unique_indices = np.unique(length_um, return_index=True)
-        unique_e = e_kev[unique_indices]
-
-        if len(unique_e) < 2:
-            print(f"Error: Not enough unique data points for interpolation for Z={ion_z}. Skipping.")
-            return None, None, None, None, None
-
-        e_to_x_func = interp1d(unique_e, unique_length, bounds_error=False, fill_value="extrapolate")
-        self._srim_cache[ion_z] = (e_to_x_func, unique_e, dee_dx[unique_indices], den_dx[unique_indices], unique_length)
-        return e_to_x_func, unique_e, dee_dx[unique_indices], den_dx[unique_indices], unique_length
-    
-    def _process_raw_srim_data(self, raw_srim_filepath):
-        """
-        Processes a raw SRIM data file, handling unit conversions.
-
-        Args:
-            raw_srim_filepath (str): The full path to the raw SRIM output file.
-
-        Returns:
-            tuple: A tuple containing (e_kev, dee_dx, den_dx, length_um) where:
-                   e_kev (np.ndarray): Energy array [keV].
-                   dee_dx (np.ndarray): Electronic stopping power [keV/µm].
-                   den_dx (np.ndarray): Nuclear stopping power [keV/µm].
-                   length_um (np.ndarray): Projected track length [µm].
-        """
-        if not os.path.exists(raw_srim_filepath):
-            print(f"Error: Raw SRIM file not found at {raw_srim_filepath}.")
-            return None, None, None, None
-
-        def comma_to_dot(x):
-            if isinstance(x, bytes):
-                x = x.decode()
-            return float(x.replace(',', '.'))
-
-        data = np.genfromtxt(raw_srim_filepath, usecols=(0, 2, 3, 4, 6, 8), unpack=True, skip_header=(22+len(self.config['composition'].split('-'))), skip_footer=13, converters={0: comma_to_dot, 2: comma_to_dot, 3: comma_to_dot, 4: comma_to_dot, 6: comma_to_dot, 8: comma_to_dot})
-
-        e_raw, dee_dx, den_dx, x_raw, y_raw, z_raw = data
-        unit_e, unit_x = np.genfromtxt(raw_srim_filepath, dtype=str, skip_header=(22+len(self.config['composition'].split('-'))), skip_footer=13, usecols=(1, 5), unpack=True)
-
-        e_kev = np.zeros_like(e_raw)
-        for j, unit in enumerate(unit_e):
-            if unit == "eV": e_kev[j] = e_raw[j] * 1e-3
-            elif unit == "MeV": e_kev[j] = e_raw[j] * 1e3
-            else: e_kev[j] = e_raw[j]
-
-        x_um, y_um, z_um = np.zeros_like(x_raw), np.zeros_like(y_raw), np.zeros_like(z_raw)
-        for j, unit in enumerate(unit_x):
-            if unit == "A":
-                x_um[j], y_um[j], z_um[j] = x_raw[j] * 1e-4, y_raw[j] * 1e-4, z_raw[j] * 1e-4
-            else:
-                x_um[j], y_um[j], z_um[j] = x_raw[j], y_raw[j] * 1e-4, z_raw[j] * 1e-4
-
-        length_um = np.sqrt(x_um**2 + y_um**2 + z_um**2)
-
-        return e_kev, dee_dx, den_dx, length_um
-    
+        
     def _radiogenic_spectrum(self):
         """
         Calculates the absolute neutron flux from Spontaneous fission.
@@ -498,6 +430,7 @@ class Paleodetector:
         interpolator = interp1d(energies, sf_flux, bounds_error=False, fill_value='extrapolate')
 
         return interpolator
+
     
     def _alpha_n_spectrum(self):
         """
@@ -523,6 +456,7 @@ class Paleodetector:
         interpolator = interp1d(energies_gev, an_flux_gev, bounds_error=False, fill_value='extrapolate')
 
         return interpolator
+
 
     def _process_background_neutron_geant4_data(self, background_type, energy_bins_gev=DEFAULT_ENERGY_BINS_GEV, total_simulated_particles=1e4):
         """
@@ -595,6 +529,7 @@ class Paleodetector:
             'Er_bins': RECOIL_ENERGY_BINS_MEV,
             **normalized_spectra,
         }
+
     
     def calculate_background_neutron_spectrum(self, 
         x_bins=DEFAULT_INTEGRATION_X_BINS_NM, 
@@ -624,6 +559,7 @@ class Paleodetector:
             sum_drdx += drdx['total']
 
         return sum_drdx
+
 
     def integrate_background_neutron_spectrum(
         self, 
@@ -663,6 +599,7 @@ class Paleodetector:
         total_tracks_g = np.array([quad(total_tracks_interp, x_bins[i], x_bins[i+1])[0] for i in range(len(x_mids))])
 
         return x_bins, total_tracks_g
+
 
     def calculate_nu_spectrum(self, x_bins=TRACK_LENGTH_BINS_NM, flux_name='all'):
         """
@@ -704,6 +641,7 @@ class Paleodetector:
                 dRdx += self.config['stoich'][i] * dRdE_kev * np.abs(x_to_dedx_func(x_mid))
         
         return dRdx * 365 * 1e6
+
     
     def integrate_nu_spectrum(self, x_bins=DEFAULT_INTEGRATION_X_BINS_NM, flux_name="all", x_grid=TRACK_LENGTH_BINS_NM):
 
@@ -719,6 +657,7 @@ class Paleodetector:
         total_tracks_mg = np.asarray(total_tracks_kg) * 1e-6
 
         return x_bins, total_tracks_mg
+
     
     def calculate_fission_spectrum(self, x_bins=TRACK_LENGTH_BINS_NM):
         """
@@ -736,10 +675,6 @@ class Paleodetector:
         Z_fission, A_fission, _ = self._load_nuclear_data("U238.dat")
         Z_bind, A_bind, B_bind = self._load_nuclear_data("BindingEne.txt")
         binding_map = {(int(z), int(a)): b for z, a, b in zip(Z_bind, A_bind, B_bind)}
-
-        B0_U238 = 7.570126
-        FISSIONS_U238_G_KYR = 2.14e8
-        U238_ABUNDANCE = 0.9927
 
         fission_rate_factor = self.config["uranium_concentration_g_g"] * FISSIONS_U238_G_KYR * U238_ABUNDANCE
 
@@ -761,20 +696,31 @@ class Paleodetector:
             Ek1_MeV = (M0**2 + m1**2 - m2**2) / (2 * M0) - m1
             Ek2_MeV = (M0**2 + m2**2 - m1**2) / (2 * M0) - m2
 
-            srim_func1, _, _, _, _ = self._load_srim_data(z1)
-            srim_func2, _, _, _, _ = self._load_srim_data(z2)
+            geant4_input_dir = os.path.join(self.data_path, "Geant4_data", self.name, "Range")
 
-            if srim_func1 and srim_func2:
-                track1 = srim_func1(Ek1_MeV * 1e3) * 1e3
-                track2 = srim_func2(Ek2_MeV * 1e3) * 1e3
-                total_track_lengths_nm.append(track1 + track2)
-                
+            filepath1 = os.path.join(geant4_input_dir, f"DEDX_Z{z1}_A{a1}.txt")
+
+            e_MeV1, _, _, length_um1 = np.loadtxt(filepath1, skiprows=1, unpack=True)
+            e_to_x_func1 = interp1d(e_MeV1, length_um1 * 1e3, 
+                                    bounds_error=False, fill_value=0.0)
+
+            filepath2 = os.path.join(geant4_input_dir, f"DEDX_Z{z2}_A{a2}.txt")
+
+            e_MeV2, _, _, length_um2 = np.loadtxt(filepath2, skiprows=1, unpack=True)
+            e_to_x_func2 = interp1d(e_MeV2, length_um2 * 1e3,
+                                    bounds_error=False, fill_value=0.0)
+
+            track1 = e_to_x_func1(Ek1_MeV)
+            track2 = e_to_x_func2(Ek2_MeV)
+            total_track_lengths_nm.append(track1 + track2)
+
         counts, bin_edges = np.histogram(total_track_lengths_nm, bins=x_bins)
         bin_widths = np.diff(bin_edges)
         
         dRdx = (counts / num_events) * fission_rate_factor / bin_widths
         
         return dRdx
+
     
     def integrate_fission_spectrum(self, x_bins=DEFAULT_INTEGRATION_X_BINS_NM, x_grid=TRACK_LENGTH_BINS_NM):
 
@@ -790,6 +736,7 @@ class Paleodetector:
         total_tracks_mg = total_tracks_g * 1e-3
 
         return x_bins, total_tracks_mg
+
 
     def _load_depth_interpolators(self, species='mu-'):
         """
@@ -844,14 +791,17 @@ class Paleodetector:
 
         else:
             self._depth_interpolators[species]['attenuation'] = interp1d(pri_energies, attenuation, kind='linear', fill_value='extrapolate', bounds_error=False)
+
     
     def _clipped_maxdepth(self, x):
         """Clipped maximum penetration depth (pickleable instance method)."""
         return np.clip(self._maxdepth_interp(x), 0.5e-3, np.inf)
 
+
     def _clipped_meanwidth(self, x):
         """Clipped mean width (pickleable instance method)."""
         return np.clip(self._meanwidth_interp(x), 1.e-4, np.inf)
+
 
     def _flux_time_kyr(self, t_kyr):
         """
@@ -868,6 +818,7 @@ class Paleodetector:
             float: The corresponding time [kyr] on the FluxHistory timeline.
         """
         return t_kyr - self.total_age_kyr
+
     
     def _get_local_neutron_flux_batch(
         self, target_depth_array, t_kyr_array, energy_bins_gev,
@@ -941,6 +892,7 @@ class Paleodetector:
 
         return slice_yield, depth_bins
 
+
     def _get_all_fragments(self, energy_names_gev, species='mu-'):
         """
         Dynamically determines the list of all nuclear fragments from Geant4 output files.
@@ -963,16 +915,15 @@ class Paleodetector:
                 names = np.loadtxt(filepath, usecols=0, dtype=str, ndmin=1)
 
                 for name in names:
-                    if name not in ['He3', 'He4', 'He5', 'He6', 'He7', 'He8', 'alpha', 'proton']:
-                        all_fragments.add(name)
+                    all_fragments.add(name)
         return sorted(list(all_fragments))
+
 
     def _process_geant4_data(
         self,
         t_kyr_array,
         energy_bins_gev=DEFAULT_ENERGY_BINS_GEV,
         total_simulated_particles=1e4,
-        target_thickness_cm=TYPICAL_DEPTH_CM,
         species='mu-',
     ):
         """
@@ -984,7 +935,6 @@ class Paleodetector:
             t_kyr_array (np.ndarray): Local exposure-clock times [kyr], shape (T,).
             energy_bins_gev (np.ndarray): Energy bin edges [GeV].
             total_simulated_particles (float): Particles per Geant4 run.
-            target_thickness_cm (float): Target slice thickness [cm].
             species (str): 'mu-', 'mu+', or 'neutron'.
 
         Returns:
@@ -1004,6 +954,10 @@ class Paleodetector:
         if not self._depth_interpolators.get(species):
             raise ValueError(f"Depth interpolators not initialized for species {species}.")
 
+        target_volume_cm3 = 1.e-3/self.config['density_g_cm3']
+
+        target_thickness_cm = np.power(target_volume_cm3, 1/3)
+
         t_kyr_array = np.atleast_1d(np.asarray(t_kyr_array, dtype=float))
         n_t = t_kyr_array.shape[0]
 
@@ -1017,7 +971,7 @@ class Paleodetector:
             slope = self._depth_interpolators[species]['attenuation']
 
         all_fragments = self._get_all_fragments(energy_bins_gev[:-1], species)
-        geant4_input_dir = os.path.join(self.data_path, "Geant4_data", f"{self.name}_{species}")
+        geant4_input_dir = os.path.join(self.data_path, "Geant4_data", self.name, species)
 
         n_recoil_bins = len(RECOIL_ENERGY_BINS_MEV) - 1
         fragment_spectra = {frag: np.zeros((n_t, n_recoil_bins)) for frag in all_fragments}
@@ -1132,16 +1086,10 @@ class Paleodetector:
 
         normalized_spectra = {}
         for name, spectrum in fragment_spectra.items():
-            if name == 'neutron':
-                denom = bin_widths_mev * total_simulated_particles
-                normalized_spectra[name] = np.divide(
-                    spectrum, denom[None, :], out=np.zeros_like(spectrum), where=denom[None, :] != 0
-                )
-            else:
-                normalized_spectra[name] = np.divide(
-                    spectrum, norm_factor[None, :], out=np.zeros_like(spectrum),
-                    where=norm_factor[None, :] != 0,
-                )
+            normalized_spectra[name] = np.divide(
+                spectrum, norm_factor[None, :], out=np.zeros_like(spectrum),
+                where=norm_factor[None, :] != 0,
+            )
 
         return {
             't_kyr': t_kyr_array,
@@ -1153,13 +1101,15 @@ class Paleodetector:
 
     def _process_secondary_geant4_data(
         self, t_kyr_array, energy_bins_gev=DEFAULT_ENERGY_BINS_GEV,
-        total_simulated_particles=1e4, target_thickness_cm=TYPICAL_DEPTH_CM,
-        secondary_neutrons_species=('mu-', 'mu+', 'neutron'),
+        total_simulated_particles=1e4, secondary_neutrons_species=('mu-', 'mu+', 'neutron'),
     ):
+
+        target_volume_cm3 = 1.e-3/self.config['density_g_cm3']
+        target_thickness_cm = np.power(target_volume_cm3, 1/3)
 
         slope = self._depth_interpolators['neutron']['attenuation']
         all_fragments = self._get_all_fragments(energy_bins_gev[:-1], species='neutron')
-        geant4_input_dir = os.path.join(self.data_path, "Geant4_data", f"{self.name}_neutron")
+        geant4_input_dir = os.path.join(self.data_path, "Geant4_data", self.name, "neutron")
 
         t_kyr_array = np.atleast_1d(np.asarray(t_kyr_array, dtype=float))
         n_t = len(t_kyr_array)
@@ -1290,17 +1240,31 @@ class Paleodetector:
                 er_mid_mev, dRdEr_mev, axis=-1, bounds_error=False, fill_value=0.0
             )
 
-            nucleus_name = ''.join(filter(str.isalpha, nuclide_name))
-            ion_z = element(nucleus_name).atomic_number
-            srim_func, e, dee_dx, den_dx, x = self._load_srim_data(ion_z)
-            if not srim_func:
-                continue
+            if nuclide_name == "proton":
+                corr_nuclide_name = "H1"
+            elif nuclide_name == "deuteron":
+                corr_nuclide_name = "H2"
+            elif nuclide_name == "triton":
+                corr_nuclide_name = "H3"
+            elif nuclide_name == "alpha":
+                corr_nuclide_name = "He4"
+            else:
+                corr_nuclide_name = nuclide_name
+                nucleus_name = ''.join(filter(str.isalpha, corr_nuclide_name))
+                ion_z = element(nucleus_name).atomic_number
+                ion_a = int(''.join(filter(str.isdigit, corr_nuclide_name)))
 
-            sorted_indices = np.argsort(x)
-            x_to_e_func = interp1d(x[sorted_indices] * 1e3, e[sorted_indices] * 1e-3,
+            geant4_input_dir = os.path.join(self.data_path, "Geant4_data", self.name, "Range")
+
+            filepath = os.path.join(geant4_input_dir, f"DEDX_Z{ion_z}_A{ion_a}.txt")
+
+            e_MeV, dee_dx_mev_um, den_dx_mev_um, length_um = np.loadtxt(filepath, skiprows=1, unpack=True)
+
+            sorted_indices = np.argsort(length_um)
+            x_to_e_func = interp1d(length_um[sorted_indices] * 1e3, e_MeV[sorted_indices],
                                     bounds_error=False, fill_value=0.0)
-            x_to_dedx_func = interp1d(x[sorted_indices] * 1e3,
-                                    (dee_dx[sorted_indices] + den_dx[sorted_indices]) * 1e-6,
+            x_to_dedx_func = interp1d(length_um[sorted_indices] * 1e3,
+                                    (dee_dx_mev_um[sorted_indices] + den_dx_mev_um[sorted_indices]) * 1e-3,
                                     bounds_error=False, fill_value=0.0)
 
             e_at_x = x_to_e_func(x_mid_nm)
@@ -1323,16 +1287,16 @@ class Paleodetector:
     def calculate_particle_signal_spectrum(
         self,  t_kyr_array, x_bins=DEFAULT_INTEGRATION_X_BINS_NM,
         energy_bins_gev=DEFAULT_ENERGY_BINS_GEV, total_simulated_particles=1e4, 
-        target_thickness_cm=TYPICAL_DEPTH_CM, species='mu-', nucleus="total",
+        species='mu-', nucleus="total",
     ):
         
         if species == 'secondary_neutron':
             recoil_data = self._process_secondary_geant4_data(
-                t_kyr_array, energy_bins_gev, total_simulated_particles, target_thickness_cm,
+                t_kyr_array, energy_bins_gev, total_simulated_particles,
             )
         else:
             recoil_data = self._process_geant4_data(
-                t_kyr_array, energy_bins_gev, total_simulated_particles, target_thickness_cm, species,
+                t_kyr_array, energy_bins_gev, total_simulated_particles, species,
             )
 
         dRdx_at_depth = self._convert_recoil_to_track_spectrum(recoil_data, x_bins, energy_bins_gev, species)
@@ -1348,7 +1312,7 @@ class Paleodetector:
     def integrate_particle_signal_spectrum(
         self, x_bins=DEFAULT_INTEGRATION_X_BINS_NM, energy_bins_gev=DEFAULT_ENERGY_BINS_GEV,
         exposure_window_kyr=None, flux_history=None, steps=None, total_simulated_particles=1e4, 
-        target_thickness_cm=TYPICAL_DEPTH_CM, x_grid=TRACK_LENGTH_BINS_NM, species='mu-', nucleus="total"
+        x_grid=TRACK_LENGTH_BINS_NM, species='mu-', nucleus="total"
     ):
         if flux_history is not None:
             self.flux_history = flux_history
@@ -1374,7 +1338,7 @@ class Paleodetector:
         dRdx_array = self.calculate_particle_signal_spectrum(
             t_kyr_array, x_bins=x_grid, energy_bins_gev=energy_bins_gev,
             total_simulated_particles=total_simulated_particles,
-            target_thickness_cm=target_thickness_cm, species=species, nucleus=nucleus
+            species=species, nucleus=nucleus
         )
 
         total_drdx_g = np.trapezoid(dRdx_array, t_kyr_array, axis=0)
@@ -1391,15 +1355,13 @@ class Paleodetector:
     def integrate_all_particles(
         self,  x_bins=DEFAULT_INTEGRATION_X_BINS_NM, energy_bins_gev=DEFAULT_ENERGY_BINS_GEV,
         exposure_window_kyr=None, flux_history=None,steps=None, 
-        total_simulated_particles=1e4, target_thickness_cm=TYPICAL_DEPTH_CM,
-        species_list=('mu-', 'mu+', 'neutron', 'secondary_neutron'), nucleus="total"
+        total_simulated_particles=1e4, species_list=('mu-', 'mu+', 'neutron', 'secondary_neutron'), nucleus="total"
     ):
 
         shared_kwargs = dict(
             x_bins=x_bins, energy_bins_gev=energy_bins_gev, 
-            exposure_window_kyr=exposure_window_kyr, flux_history=flux_history,
-            steps=steps, total_simulated_particles=total_simulated_particles,
-            target_thickness_cm=target_thickness_cm, nucleus=nucleus
+            exposure_window_kyr=exposure_window_kyr, flux_history=flux_history, steps=steps, 
+            total_simulated_particles=total_simulated_particles, nucleus=nucleus
         )
 
         tasks = [(self, dict(shared_kwargs, species=s)) for s in species_list]

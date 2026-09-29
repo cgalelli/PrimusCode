@@ -15,7 +15,7 @@ G4ClassificationOfNewTrack StackingAction::ClassifyNewTrack(const G4Track* aTrac
     
     // PERFORMANCE OPTIMIZATION:
     // Kill electrons immediately. We don't record them, and tracking them takes forever.
-    if (name == "e-") return fKill; 
+    if (name == "e-" || name == "e+") return fKill; 
 
     // Track everything else (Nuclei, Neutrons, Gammas, etc.)
     return fUrgent;

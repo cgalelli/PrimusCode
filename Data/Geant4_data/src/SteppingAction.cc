@@ -40,12 +40,12 @@ void SteppingAction::UserSteppingAction(const G4Step* aStep)
             if (name == "e-") continue; 
 
             // Filter: Threshold Energy & Geometry
-            G4double minEnergy = 10000.0 * eV; 
+            G4double minEnergy = 1000.0 * eV; 
             
             if (secEnergy > minEnergy && std::abs(zPos) < 100000*mm) {
                 
                 // Filter: Select Nuclei (Charge > 1) OR Neutrons
-                if (particle->GetPDGCharge() > 1 || name == "neutron") {
+                if (particle->GetPDGMass()/MeV > 900.) {
                     
                     std::ofstream* out = fRunAction->GetOutputFile();
                     if (out && out->is_open()) {
