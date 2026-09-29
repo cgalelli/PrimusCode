@@ -300,8 +300,6 @@ class Paleodetector:
         """
         self.config = mineral_config
         self.name = mineral_config['name']
-        self.shortname = mineral_config["shortname"]
-        self.composition = mineral_config['composition']
         self.data_path = data_path_prefix
 
         self.verbose = 1

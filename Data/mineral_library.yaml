@@ -1,7 +1,5 @@
 Halite:
   name: Halite
-  shortname: Hal
-  composition: Na-Cl
   nuclei:
   - Na
   - Cl
@@ -13,8 +11,6 @@ Halite:
   an_coeff_n_nalpha: 1
 Olivine:
   name: Olivine
-  shortname: Oli
-  composition: Mg-Fe-Si- O
   nuclei:
   - Mg
   - Fe
@@ -30,8 +26,6 @@ Olivine:
   an_coeff_n_nalpha: 0.1
 Quartz:
   name: Quartz
-  shortname: Qz
-  composition: Si- O
   nuclei:
   - Si
   - O
@@ -43,8 +37,6 @@ Quartz:
   an_coeff_n_nalpha: 0.1
 Spinel:
   name: Spinel
-  shortname: Spi
-  composition: Mg-Al- O
   nuclei:
   - Mg
   - Al
@@ -58,8 +50,6 @@ Spinel:
   an_coeff_n_nalpha: 0.1
 Apatite:
   name: Apatite
-  shortname: Apa
-  composition: Ca- P- O- F-Cl- O- H
   nuclei:
   - Ca
   - P
@@ -79,8 +69,6 @@ Apatite:
   an_coeff_n_nalpha: 1.33
 Orthopyroxene:
   name: Orthopyroxene
-  shortname: Opx
-  composition: Fe-Mg-Si- O
   nuclei:
   - Fe
   - Mg
@@ -96,15 +84,12 @@ Orthopyroxene:
   an_coeff_n_nalpha: 0.1
 Clinopyroxene:
   name: Clinopyroxene
-  shortname: Cpx
-  composition: Fe-Mg-Si- O-Ca
   nuclei:
   - Fe
   - Mg
   - Si
   - O
   - Ca
-
   stoich:
   - 0.1
   - 0.9
