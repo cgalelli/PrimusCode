@@ -112,160 +112,95 @@ def log_interp1d(xx, yy, kind='linear'):
     return log_interp
 
 
-def _asymmetric_gaussian_kernel(size, sigma_left, sigma_right=None):
+def slice_spectrum(counts_mg, sample_area_cm2=None, sample_density_g_cm3=None,
+                   x_bins=DEFAULT_INTEGRATION_X_BINS_NM, angular_pdf=None,
+                   phi_cut_deg=0., pit_width=500., bulk_etching_depth=100.,
+                   f_phi=lambda phi: 1., correction=True):
     """
-    Generates an asymmetric Gaussian kernel for convolution.
-
-    If sigma_left and sigma_right are not provided, it generates a standard
-    symmetric Gaussian kernel.
+    Monte Carlo simulation of track slicing: a 3D population of latent tracks is
+    sectioned by the etched surface, and the geometrical, angular and pit-width
+    effects on the measured size are applied.
 
     Args:
-        size (int): The total size (number of points) of the kernel. Must be odd.
-        sigma_left (float): The standard deviation for the left tail.
-        sigma_right (float, optional): The standard deviation for the right tail. If None, the kernel is a symmetric gaussian with sigma = sigma_left.
+        counts_mg (np.ndarray): True (latent) spectrum, tracks per mg of target in each
+                                length bin.
+        sample_area_cm2 (float): Analysed surface area [cm^2].
+        sample_density_g_cm3 (float): Target density [g/cm^3].
+        x_bins (np.ndarray): Bin edges of the length spectrum [nm]
+                             (len(x_bins) == len(counts_mg) + 1).
+        angular_pdf (np.ndarray, optional): Probability density of phi, the angle between
+                                            the track and the surface PLANE (phi = pi/2 is
+                                            perpendicular to the surface), sampled on
+                                            len(angular_pdf) equally spaced points in
+                                            [0, pi/2]. The sin/cos Jacobian must already be
+                                            included. Defaults to an isotropic distribution
+                                            in solid angle, p(phi) ~ cos(phi).
+        phi_cut_deg (float): Angular filter threshold (tracks with phi < phi_cut are
+                             rejected). Set to 0.0 for highly-faithful plasma etching.
+        pit_width (float): Typical width of the etched pit [nm]. Tracks whose along-surface
+                           footprint is smaller than half of it are measured as this width.
+        bulk_etching_depth (float): Height of the etched surface above the cube mid-plane [nm].
+        f_phi (callable): Anisotropic-enlargement correction, applied as L_seg * f_phi(phi).
+                          Use lambda phi: 1.0 for an isotropic process.
+        correction (bool): If True, applies the pit_width correction.
 
     Returns:
-        np.ndarray: The normalized 1D convolution kernel.
+        np.ndarray: Expected number of tracks per bin of measured size N(L_meas) on the
+                    analysed area (absolute counts, not normalized to the input counts).
     """
-    if size % 2 == 0:
-        raise ValueError("Kernel size must be odd.")
-    center = size // 2
-    x = np.arange(size)
+    if sample_area_cm2 is None or sample_density_g_cm3 is None:
+        raise ValueError("sample_area_cm2 and sample_density_g_cm3 are required.")
 
-    if sigma_right is None:
-        sigma_right = sigma_left
+    counts_mg = np.asarray(counts_mg, dtype=float)
+    total_counts = counts_mg.sum()
+    if total_counts <= 0:
+        return np.zeros(len(x_bins) - 1)
 
-    kernel = np.zeros(size)
+    cube_side_cm = (1.e-3 / sample_density_g_cm3) ** (1. / 3.)
+    cube_side_nm = cube_side_cm * 1.e7
 
-    kernel[:center] = np.exp(-(x[:center] - center)**2 / (2 * sigma_left**2))
-    kernel[center] = 1.0
-    kernel[center+1:] = np.exp(-(x[center+1:] - center)**2 / (2 * sigma_right**2))
-
-    return kernel / np.sum(kernel)
-
-
-def smear_spectrum(counts, size, sigma_left, sigma_right=None):
-    """
-    Applies asymmetric gaussian smearing to the track length distribution.
-
-    Args:
-        counts (np.ndarray): Track counts in the bins.
-        size (int): The total size (number of points) of the kernel. Must be odd.
-        sigma_left (float): The standard deviation for the left tail.
-        sigma_right (float, optional): The standard deviation for the right tail. If None, the kernel is a symmetric gaussian with sigma = sigma_left.
-
-    Returns:
-        np.ndarray: The smeared track counts.
-    """        
-    smeared_counts = np.convolve(counts, _asymmetric_gaussian_kernel(size, sigma_left, sigma_right), mode='same')
-
-    return smeared_counts
-
-
-def slice_spectrum(counts_mg, sample_area_cm2=None, sample_density_g_cm3=None, x_bins=DEFAULT_INTEGRATION_X_BINS_NM, angular_pdf=None, phi_cut_deg=0., pit_width=500., bulk_etching_depth=100., f_phi= lambda phi: 1., correction=True):
-    """
-    Applies Monte Carlo simulation of track slicing, accounting for geometrical, angular, 
-    and experimental filtering effects (min/max measurable length).
-
-    Args:
-        x_bins (np.ndarray): The bin edges for the true track length spectrum R [nm].
-        counts_g (np.ndarray): The array of true track counts N(R) in each bin.
-        angular_pdf (np.ndarray, optional): Normalized array P(phi) for the angle distribution 
-                                            of tracks relative to the surface normal. Defaults to isotropic (sin(phi)).
-        phi_cut_deg (float): Angular filter threshold (tracks with phi < phi_cut are rejected). 
-                                Set to 0.0 for highly-faithful plasma etching.
-        pit_width (float): Typical width of the etched pit [nm]. 
-                            Tracks with parallel footprint smaller than this threshold will be measured by this.
-        bulk_etching_depth (float): Vertical development of the etching [nm]. 
-        f_phi (callable): Function applied to the segment length L_seg * f_phi(phi). Corrects 
-                            for anisotropic enlargement (e.g., set to lambda phi: 1.0 for plasma etching).
-        correction (bool): If True, applies pit_width correction. If not, the pit_width correction is ignored.
-    Returns:
-        np.ndarray: The resulting measured track count histogram N(L_meas), normalized to 
-                    the total input counts.
-    """
-    cube_size = 1.e-3/sample_density_g_cm3
-
-    cube_side = np.power(cube_size, 1/3)
-
-    factor = sample_area_cm2/(cube_side**2)
+    n_samples = int(round(sample_area_cm2 / cube_side_cm ** 2 * total_counts))
 
     x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
     phi_cut_rad = np.deg2rad(phi_cut_deg)
 
-    n_samples = factor*np.sum(counts_mg)
+    samples = np.random.choice(x_mids, size=n_samples, p=counts_mg / total_counts)
 
-    samples = np.random.choice(x_mids, size=int(n_samples), p=counts_mg/np.sum(counts_mg))
-
-    if angular_pdf:
-        phi_grid = np.linspace(0, np.pi / 2, 1000)
-        sampled_angles = np.random.choice(phi_grid, size=int(n_samples), p=angular_pdf / np.sum(angular_pdf))
+    if angular_pdf is not None:
+        angular_pdf = np.asarray(angular_pdf, dtype=float)
+        phi_grid = np.linspace(0, np.pi / 2, len(angular_pdf))
+        sampled_angles = np.random.choice(phi_grid, size=n_samples,
+                                          p=angular_pdf / angular_pdf.sum())
     else:
-        sampled_angles = np.random.uniform(low=0, high=np.pi / 2, size=int(n_samples))
+        sampled_angles = np.arcsin(np.random.uniform(0., 1., size=n_samples))
 
     is_retained = sampled_angles >= phi_cut_rad
-
     samples_retained = samples[is_retained]
     phi_retained = sampled_angles[is_retained]
 
-    sim_start_point = np.random.uniform(low = -cube_side/2., high = cube_side/2., size=len(samples_retained))
+    sim_start_point = np.random.uniform(low=-cube_side_nm / 2., high=cube_side_nm / 2.,
+                                        size=len(samples_retained))
+    sim_end_point = sim_start_point + samples_retained * np.sin(phi_retained)
 
-    sim_end_point = sim_start_point + (samples_retained * np.sin(phi_retained))
-
-    valid = (sim_end_point > bulk_etching_depth)
+    valid = (sim_start_point < bulk_etching_depth) & (sim_end_point > bulk_etching_depth)
 
     angles_valid = phi_retained[valid]
     cut_sim_true_depth = sim_end_point[valid]
 
-    depth = (cut_sim_true_depth - bulk_etching_depth)/np.sin(angles_valid)
-
-    measured_samples = depth*f_phi(angles_valid)
+    depth = (cut_sim_true_depth - bulk_etching_depth) / np.sin(angles_valid)
+    measured_samples = depth * f_phi(angles_valid)
 
     if correction:
-        corrected_measurable_samples = np.where(measured_samples * np.cos(angles_valid) >= pit_width/2., (pit_width/2.)+measured_samples * np.cos(angles_valid), pit_width)
+        footprint = measured_samples * np.cos(angles_valid)
+        corrected_measurable_samples = np.where(footprint >= pit_width / 2.,
+                                                pit_width / 2. + footprint,
+                                                pit_width)
     else:
         corrected_measurable_samples = measured_samples
 
     hist_measurable, _ = np.histogram(corrected_measurable_samples, bins=x_bins, density=False)
 
     return hist_measurable
-
-
-def detection_model_efficiency(x_bins, counts, precision, recall, model_mean, sigma_left, sigma_right=None, meas_error=1000.):
-    """
-    Multiplies counts (sliced) with the efficiency function for the detection model
-    
-    Args:
-        x_bins (np.ndarray): The bin edges for the track length spectrum R [nm].
-        counts (np.ndarray): The array of track counts N(R) in each bin.
-        precision (float): Precision of the counting model.
-        recall (float): Recall of the counting model.
-        model_mean (float): Peak length for the efficiency distribution.
-        sigma_left (float): Left standard deviation of the efficiency distirbution assuming asymmetric normal shape.
-        sigma_right (float, optional): Right standard deviation of the efficiency distirbution assuming asymmetric normal shape.
-        
-    Returns:
-        np.ndarray: Efficiency-corrected counts.
-    """
-
-    x_mids = x_bins[:-1] + np.diff(x_bins) / 2.0
-
-    eff = np.zeros_like(x_mids)
-
-    if sigma_right is None:
-        sigma_right = sigma_left
-
-    center = np.argmin(np.abs(model_mean - x_mids))
-
-    eff[:center] = np.exp(-(x_mids[:center] - model_mean)**2 / (2 * sigma_left**2))
-    eff[center] = 1.0
-    eff[center+1:] = np.exp(-(x_mids[center+1:] - model_mean)**2 / (2 * sigma_right**2))
-
-    counts_with_efficiency = counts * eff * recall / precision
-
-    counts_with_measure = smear_spectrum(counts_with_efficiency, len(x_bins)//2*2-1, meas_error/np.diff(x_bins)[0], meas_error/np.diff(x_bins)[0])
-
-    return counts_with_measure
 
 
 # --- Main Paleodetector Class ---
